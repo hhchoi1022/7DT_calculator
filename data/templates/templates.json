@@ -1,0 +1,146 @@
+{
+  "Star: O5V": {
+    "file": "pickles_o5v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "O5V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: B0V": {
+    "file": "pickles_b0v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "B0V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: A0V": {
+    "file": "pickles_a0v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "A0V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: F0V": {
+    "file": "pickles_f0v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "F0V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: G2V": {
+    "file": "pickles_g2v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "G2V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: K0V": {
+    "file": "pickles_k0v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "K0V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Star: M0V": {
+    "file": "pickles_m0v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "M0V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
+  "Galaxy: Elliptical": {
+    "file": "kc96_elliptical.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "Elliptical galaxy. Extended beyond 9935 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11005.0
+  },
+  "Galaxy: S0": {
+    "file": "kc96_s0.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "S0 galaxy. Extended beyond 9970 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11000.0
+  },
+  "Galaxy: Sa": {
+    "file": "kc96_sa.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "Sa galaxy. Extended beyond 9995 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11005.0
+  },
+  "Galaxy: Sb": {
+    "file": "kc96_sb.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "Sb galaxy. Extended beyond 9950 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11000.0
+  },
+  "Galaxy: Sc": {
+    "file": "kc96_sc.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "Sc galaxy. Extended beyond 7660 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11000.0
+  },
+  "Galaxy: Starburst": {
+    "file": "kc96_starb1.csv",
+    "category": "Galaxy",
+    "source": "Kinney et al. (1996) galaxy templates, STScI CDBS",
+    "note": "Starburst SB1 (E(B-V) < 0.10). Extended beyond 9945 A with constant f_nu.",
+    "lam_min": 1235.0,
+    "lam_max": 11005.0
+  },
+  "QSO (SDSS, Vanden Berk 2001)": {
+    "file": "qso_vandenberk2001.csv",
+    "category": "AGN",
+    "source": "Vanden Berk et al. (2001) SDSS median composite quasar spectrum (AJ 122, 549, electronic Table 1)",
+    "note": "Rest-frame 800-8555 A, relative f_lambda; set z. Extended beyond 8554 A with constant f_nu.",
+    "lam_min": 800.5,
+    "lam_max": 11004.5
+  },
+  "QSO (X-shooter, Selsing 2016)": {
+    "file": "qso_selsing2016.csv",
+    "category": "AGN",
+    "source": "Selsing et al. (2016) X-shooter composite of luminous 1<z<2.1 SDSS quasars, VizieR J/A+A/585/A87",
+    "note": "Rest-frame 1000-11350 A, f_lambda normalised at 6800 A; set z.",
+    "lam_min": 1000.1,
+    "lam_max": 11349.7
+  },
+  "SN Ia (max)": {
+    "file": "nugent_sn1a_max.csv",
+    "category": "Supernova",
+    "source": "Nugent template sn1a_flux.v1.2.dat (https://c3.lbl.gov/nugent/templates/), epoch 19 d of the file = B-band maximum",
+    "note": "Normal SN Ia, at maximum light (Nugent, Kim & Perlmutter 2002).",
+    "lam_min": 1000.0,
+    "lam_max": 25000.0
+  },
+  "SN Ib/c (max)": {
+    "file": "nugent_sn1bc_max.csv",
+    "category": "Supernova",
+    "source": "Nugent template sn1bc_flux.v1.1.dat (https://c3.lbl.gov/nugent/templates/), epoch 17 d of the file = B-band maximum",
+    "note": "SN Ib/c, at maximum light (Levan et al. 2005).",
+    "lam_min": 1000.0,
+    "lam_max": 25000.0
+  },
+  "SN II-P (max)": {
+    "file": "nugent_sn2p_max.csv",
+    "category": "Supernova",
+    "source": "Nugent template sn2p_flux.v1.2.dat (https://c3.lbl.gov/nugent/templates/), epoch 11 d of the file = B-band maximum",
+    "note": "SN II-P, at maximum light (Gilliland, Nugent & Phillips 1999).",
+    "lam_min": 1000.0,
+    "lam_max": 25000.0
+  }
+}

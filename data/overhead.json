@@ -1,0 +1,9 @@
+{
+    "_description": "Per-event overheads of a 7DT observation in seconds, measured from TCSpy logs (medians over 2025 operations, 1x1 binning). autofocus: successful run 113 s, 8 % failures at ~160 s -> 117 s expected. filter_change: filter exchange (median 4 s, 3.4-8.5 s depending on the pair) plus the focus offset move that goes with it (~4 s) -> 8 s. slewing: slew (5 s below 5 deg, up to 9 s beyond 90 deg) plus the fixed 5 s settle -> 11 s. dispatch: observation setup (1 s) and hand-over between targets (2.6 s) -> 3.5 s. readout: readout + transfer (6 s) plus image save (2 s) -> 8 s per frame; 2x2 binning would be ~4.6 s.",
+    "autofocus": 117,
+    "filter_change": 8,
+    "slewing": 11,
+    "dispatch": 3.5,
+    "readout": 8,
+    "autofocus_history_duration_min": 60
+}

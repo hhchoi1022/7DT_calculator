@@ -1,0 +1,6 @@
+name,ra,dec,mag,mag_filter,spectrum,z
+NGC 253,00:47:33.12,-25:17:17.6,19.0,r,Galaxy: Sc,0
+SN 2026abc,03:12:45.0,-12:30:00,18.5,g,SN Ia (max),0.02
+QSO J0100,15.0542,28.0406,19.5,i,"QSO (SDSS, Vanden Berk 2001)",2.1
+HD 209458,22:03:10.8,+18:53:04,7.6,V,Star: G2V,0
+GRB 260901,14:57:49.5,-12:49:47,20.0,r,Upload (custom file),0
