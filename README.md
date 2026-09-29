@@ -11,17 +11,18 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 
 ## Pages
 
-| Page | Entry file | Start script | Port | What it does |
-|------|------------|--------------|------|--------------|
-| Visibility | `visibility_app.py` | `./run_visibility.sh` | 8509 | Altitude / Moon / twilight over one night for a table of targets, plus a month overview of observable hours (Plotly) |
-| Exposure time / SNR | `etc_app.py` | `./run_etc.sh` | 8510 | Empirical 7DT depth model: SNR for an exposure time and frame count, or the total exposure time needed for a target SNR, for every filter of an observation mode; point or extended sources; spectrum templates or uploads (Plotly) |
-| Overhead time | `overhead_app.py` | `./run_overhead.sh` | 8511 | Total observing time of one observation (exposure, readout, filter changes, autofocus, slewing, dispatch) for an observation mode |
-| 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | 8512 | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
-| Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | 8513 | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
-| *(legacy)* combined page | `app.py` | `./run_app.sh` | 8508 | The original single-page version with all functions on one page. Kept for reference only; do **not** extend it. The original deployment of it lives outside this repo (`../7DT_calculator`, port 8507) and is frozen. |
+| Page | Entry file | Start script | What it does |
+|------|------------|--------------|--------------|
+| Visibility | `visibility_app.py` | `./run_visibility.sh` | Altitude / Moon / twilight over one night for a table of targets, plus a month overview of observable hours (Plotly) |
+| Exposure time / SNR | `etc_app.py` | `./run_etc.sh` | Empirical 7DT depth model: SNR for an exposure time and frame count, or the total exposure time needed for a target SNR, for every filter of an observation mode; point or extended sources; spectrum templates or uploads (Plotly) |
+| Overhead time | `overhead_app.py` | `./run_overhead.sh` | Total observing time of one observation (exposure, readout, filter changes, autofocus, slewing, dispatch) for an observation mode |
+| 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
+| Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
 
-All pages are served on the 7DT analysis server. Ports 8507 and 8509 to 8513 are open in `firewalld`;
-opening another port needs a human with sudo (`sudo firewall-cmd --permanent --add-port=NNNN/tcp && sudo firewall-cmd --reload`).
+Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
+overridden with `PORT=...`; the ports in use are assigned by the operator and are not part of this
+repository. Opening a port on the server needs a human with sudo
+(`sudo firewall-cmd --permanent --add-port=NNNN/tcp && sudo firewall-cmd --reload`).
 
 ## Running
 
@@ -31,13 +32,13 @@ export PYTHONNOUSERSITE=1      # the user site-packages carry tcspy pins (numpy 
 export MPLBACKEND=Agg
 PY=~/anaconda3/envs/7dtcalc/bin/python
 
-./run_etc.sh                   # foreground, port from the script; PORT=8600 ./run_etc.sh for another port
-nohup ./run_etc.sh > ~/etc_app.log 2>&1 &     # detached
+PORT=<port> ./run_etc.sh                          # foreground
+PORT=<port> nohup ./run_etc.sh > ~/etc_app.log 2>&1 &   # detached
 
 # restart one page (the scripts run `python -m streamlit run <file> --server.port <port> --server.address 0.0.0.0 --server.headless true`)
-OLD=$(pgrep -f "[s]treamlit run etc_app.py --server.port 8510" || true); [ -n "$OLD" ] && kill $OLD; sleep 2
-nohup ./run_etc.sh > ~/etc_app.log 2>&1 &
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8510/     # 200 when up
+OLD=$(pgrep -f "[s]treamlit run etc_app.py --server.port <port>" || true); [ -n "$OLD" ] && kill $OLD; sleep 2
+PORT=<port> nohup ./run_etc.sh > ~/etc_app.log 2>&1 &
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:<port>/     # 200 when up
 ```
 
 Do not use `pkill -f streamlit` from an automated shell: the pattern matches the shell itself. Use the
@@ -127,7 +128,7 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`).
-- Keep `app.py` untouched (legacy). New features go into the separate pages and `sevendt_calc/`.
+- New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
 
 ## Gotchas (learned the hard way)
 
@@ -157,7 +158,7 @@ never copy its contents into the repo (some files hold credentials). Mode files 
 
 1. Create `<name>_app.py` with `st.set_page_config(...)`, `cfg = live_config()`, page-prefixed widget keys.
 2. Put all physics / data handling into `sevendt_calc/`; keep the page file to layout and state.
-3. Copy a `run_*.sh` script, set the port, ask the operator to open it in the firewall.
+3. Copy a `run_*.sh` script; the operator assigns the port and opens it in the firewall.
 4. Add `tests/test_<name>_app.py` with an `AppTest` smoke test plus core tests in `tests/test_core.py`.
 5. Check the page in a headless browser at desktop and phone widths.
 
