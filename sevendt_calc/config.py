@@ -37,8 +37,15 @@ def remap_path(path_str: str) -> Path:
     """Map a path written for the control PC onto the local configuration folder."""
     path_str = str(path_str)
     p = Path(path_str)
-    if p.exists():
-        return p
+    # A path we are not allowed to look into counts as not being there. On a
+    # host that happens to have a real /home/kds, closed to other users,
+    # Path.exists() raises PermissionError instead of returning False, and the
+    # control-PC path is never remapped onto the local folder.
+    try:
+        if p.exists():
+            return p
+    except OSError:
+        pass
     for prefix in REMOTE_PREFIXES:
         if path_str.startswith(prefix):
             return config_dir() / path_str[len(prefix):].lstrip('/')
