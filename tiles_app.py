@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from sevendt_calc import tiles
-from ui_common import live_config, parse_targets, report_issues, styled_rows, targets_table
+from ui_common import feedback_note, live_config, parse_targets, report_issues, styled_rows, targets_table
 
 st.set_page_config(page_title='7DT Tile matcher', page_icon='🗺️', layout='wide')
 
@@ -25,6 +25,7 @@ def get_tiles() -> tiles.TileSet:
 
 
 def main():
+    feedback_note()
     st.title('7DT Tile matcher')
     live_config()
     ts = get_tiles()

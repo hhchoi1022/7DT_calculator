@@ -11,12 +11,13 @@ import pandas as pd
 import streamlit as st
 
 from sevendt_calc import overhead
-from ui_common import live_config, obsmode_selector, show_figure
+from ui_common import feedback_note, live_config, obsmode_selector, show_figure
 
 st.set_page_config(page_title='7DT Overhead time', page_icon='⏱️', layout='wide')
 
 
 def main():
+    feedback_note()
     st.title('7DT Overhead time')
     cfg = live_config()
 

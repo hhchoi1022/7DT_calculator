@@ -18,7 +18,7 @@ from sevendt_calc import templates as tpl
 from sevendt_calc.photometry import MAG_INPUT_FILTERS
 from sevendt_calc.targets import Target
 from sevendt_calc.photometry import Spectrum
-from ui_common import FLUX_UNIT_LABELS, SPECTRUM_FILE_TYPES, live_config, obsmode_selector
+from ui_common import feedback_note, FLUX_UNIT_LABELS, SPECTRUM_FILE_TYPES, live_config, obsmode_selector
 
 st.set_page_config(page_title='7DT Exposure time / SNR', page_icon='📈', layout='wide')
 
@@ -157,6 +157,7 @@ def figures(target, results, cond, mode_key: str, value: float, seed) -> tuple:
 
 
 def main():
+    feedback_note()
     st.title('7DT Exposure time / SNR')
     st.markdown('The predictions are based on real 7DT observations taken in 2025 with 100 s exposures; '
                 'for much shorter exposures the SNR estimate may be inaccurate.')
