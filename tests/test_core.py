@@ -196,6 +196,24 @@ def test_template_redshift_changes_colours():
     z2 = tg.Target(name='q', mag=19.0, mag_filter='r', spectrum_type='QSO (SDSS, Vanden Berk 2001)', redshift=2.0)
     assert z0.ab_magnitude('m400')[0] != pytest.approx(z2.ab_magnitude('m400')[0], abs=0.01)
     assert 'z = 2' in z2.spectrum_label
+    # the magnitude in the reference filter is the observed one at any redshift
+    assert z2.ab_magnitude('r')[0] == pytest.approx(z0.ab_magnitude('r')[0], abs=1e-6)
+
+
+def test_uploaded_spectrum_is_redshifted_too():
+    from sevendt_calc.photometry import Spectrum
+    import numpy as np
+    w = np.arange(3000.0, 11000.0, 5.0)
+    rest = Spectrum.from_arrays(w, (w / 5500.0) ** -3, 'flam', source='pl')
+    shifted = rest.redshifted(1.0)
+    assert shifted.lam_min == pytest.approx(6000.0) and shifted.flux[0] == pytest.approx(rest.flux[0] / 2) and rest.redshifted(0) is rest
+    z0 = tg.Target(name='p', mag=19.0, mag_filter='r', spectrum=rest)
+    z1 = tg.Target(name='p', mag=19.0, mag_filter='r', spectrum=rest, redshift=1.0)
+    assert z1.spectrum.lam_min == pytest.approx(6000.0)
+    assert z1.ab_magnitude('r')[0] == pytest.approx(z0.ab_magnitude('r')[0], abs=1e-6)
+    assert z1.ab_magnitude('m850')[0] != pytest.approx(z0.ab_magnitude('m850')[0], abs=0.01)
+    with pytest.raises(ValueError):
+        rest.redshifted(-0.5)
 
 
 def test_visibility_shared_ephemeris_matches_single(monkeypatch):

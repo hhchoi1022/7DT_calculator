@@ -164,6 +164,16 @@ class Spectrum:
         w, f = _parse_two_columns(text)
         return cls.from_arrays(w, f, flux_unit=flux_unit, source=source)
 
+    def redshifted(self, z: float) -> 'Spectrum':
+        """The spectrum moved from its current frame to redshift `z`: wavelengths x (1+z), f_lambda / (1+z)."""
+        z = float(z or 0.0)
+        if z < 0:
+            raise ValueError('redshift must be >= 0')
+        if z == 0:
+            return self
+        return Spectrum(wavelength=self.wavelength * (1.0 + z), flux=self.flux / (1.0 + z),
+                        source=f'{self.source} at z={z:g}' if self.source else f'z={z:g}')
+
     @property
     def lam_min(self) -> float:
         return float(self.wavelength[0])
