@@ -125,6 +125,8 @@ class Target:
             raise ValueError(f'Unknown spectrum type {self.spectrum_type!r}')
         if self.spectrum is None and tpl.is_template(self.spectrum_type):
             self.spectrum = tpl.load_template(self.spectrum_type, self.redshift)
+        elif self.spectrum is not None and self.redshift:          # uploaded / analytic spectra are given in the rest frame
+            self.spectrum = self.spectrum.redshifted(self.redshift)
         for attr in ('ra', 'dec', 'mag'):
             value = getattr(self, attr)
             if value is None or (isinstance(value, float) and math.isnan(value)):

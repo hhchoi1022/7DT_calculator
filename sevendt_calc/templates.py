@@ -65,8 +65,4 @@ def load_template(key: str, redshift: float = 0.0) -> Spectrum:
     """Template spectrum (relative f_lambda) shifted to `redshift`; flux level is meaningless until scaled."""
     if key not in manifest():
         raise KeyError(f'Unknown spectrum template {key!r}')
-    base = _load(key)
-    z = float(redshift or 0.0)
-    if z < 0:
-        raise ValueError('redshift must be >= 0')
-    return Spectrum(wavelength=base.wavelength * (1.0 + z), flux=base.flux / (1.0 + z), source=key if z == 0 else f'{key} at z={z:g}')
+    return _load(key).redshifted(redshift)

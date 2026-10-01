@@ -67,7 +67,7 @@ def typical_seeing() -> float:
 
 def target_inputs() -> Target | None:
     """One target: type, magnitude or surface brightness with its filter, and the spectrum."""
-    c1, c2, c3 = st.columns([1.2, 1, 0.8])
+    c1, c2, c3, cz = st.columns([1.2, 1, 0.8, 0.8])
     ttype = c1.selectbox('Target type', TYPE_OPTIONS, key='etc_type')
     extended = ttype.startswith('Extended')
     if extended:
@@ -76,6 +76,9 @@ def target_inputs() -> Target | None:
         mag = c2.number_input('Magnitude', -2.0, 30.0, 19.0, 0.1, key='etc_mag')
     band = c3.selectbox('Filter of the magnitude', list(MAG_INPUT_FILTERS), index=list(MAG_INPUT_FILTERS).index('r'), key='etc_band',
                         help='B V R I: Vega; g r i: AB')
+    redshift = cz.number_input('Redshift', 0.0, 12.0, 0.0, 0.01, format='%.3f', key='etc_z',
+                               help='The spectrum (template, blackbody, power law or uploaded file) is taken as rest frame and shifted to this redshift; '
+                                    'the magnitude is kept as the observed value in its filter.')
     c4, c5 = st.columns([1.2, 1.8])
     category = c4.selectbox('Spectrum', SPECTRUM_CATEGORIES, index=SPECTRUM_CATEGORIES.index('Star'), key='etc_spectrum')
     spec = None
@@ -109,7 +112,7 @@ def target_inputs() -> Target | None:
             st.error(f'Could not read the spectrum: {exc}')
             return None
     return Target(name='target', mag=float(mag), mag_filter=band, spectrum_type=None if key in ANALYTIC_KEYS else key,
-                  spectrum=spec, extended=extended)
+                  spectrum=spec, extended=extended, redshift=float(redshift))
 
 
 def conditions_widgets(prefix: str):

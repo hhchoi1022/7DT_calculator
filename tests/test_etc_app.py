@@ -17,3 +17,6 @@ def test_etc_page_renders_both_modes():
     assert not at.exception, at.exception
     at.radio(key='etc_seeing_choice').set_value('85%/Poor').run()
     assert not at.exception, at.exception
+    assert at.number_input(key='etc_z').value == 0.0
+    at.number_input(key='etc_z').set_value(1.5).run()
+    assert not at.exception, at.exception
