@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from sevendt_calc import config, modebuild, modeplot
-from ui_common import live_config
+from ui_common import feedback_note, live_config
 
 st.set_page_config(page_title='7DT Mode builder', page_icon='🧩', layout='wide')
 
@@ -142,6 +142,7 @@ def mode_figure(kind: str, name: str, table: tuple):
 
 
 def main():
+    feedback_note()
     st.title('7DT Mode builder')
     cfg = live_config()
     filtinfo = cfg['filtinfo']

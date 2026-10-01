@@ -14,7 +14,7 @@ from astropy.time import Time
 from sevendt_calc import config
 from sevendt_calc import visibility as vis
 from sevendt_calc.targets import Target
-from ui_common import (live_config, moon_panel, night_date_input, night_midpoint_utc, parse_targets, report_issues,
+from ui_common import (feedback_note, live_config, moon_panel, night_date_input, night_midpoint_utc, parse_targets, report_issues,
                        site_key, site_panel, styled_rows, targets_table)
 
 st.set_page_config(page_title='7DT Visibility', page_icon='🌙', layout='wide')
@@ -64,6 +64,7 @@ def night_summary(r: vis.VisibilityResult) -> dict:
 
 
 def main():
+    feedback_note()
     st.title('7DT Visibility')
     cfg = live_config()
     site, cons = site_panel(cfg)
