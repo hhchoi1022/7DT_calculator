@@ -55,6 +55,14 @@
     "lam_min": 1150.0,
     "lam_max": 25000.0
   },
+  "Star: M4V": {
+    "file": "pickles_m4v.csv",
+    "category": "Star",
+    "source": "Pickles (1998) UVK stellar library, STScI CDBS",
+    "note": "M4V main-sequence star.",
+    "lam_min": 1150.0,
+    "lam_max": 25000.0
+  },
   "Galaxy: Elliptical": {
     "file": "kc96_elliptical.csv",
     "category": "Galaxy",

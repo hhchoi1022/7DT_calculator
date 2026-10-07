@@ -49,7 +49,7 @@ def write(name, wave, flux, meta):
 with fits.open(io.BytesIO(get(f'{CDBS}/pickles/dat_uvk/pickles_uk.fits'))) as h:
     idx = {str(r['SPTYPE']).strip().lower(): str(r['FILENAME']).strip() for r in h[1].data}
 print('Pickles index entries:', len(idx), sorted(idx)[:8], '...')
-for sp in ['o5v', 'b0v', 'a0v', 'f0v', 'g2v', 'k0v', 'm0v']:
+for sp in ['o5v', 'b0v', 'a0v', 'f0v', 'g2v', 'k0v', 'm0v', 'm4v']:
     fname = idx[sp]
     w, f = fits_table(f'{CDBS}/pickles/dat_uvk/{fname}.fits')
     write(f'Star: {sp.upper()}', w, f, {'file': f'pickles_{sp}.csv', 'category': 'Star', 'source': 'Pickles (1998) UVK stellar library, STScI CDBS',
