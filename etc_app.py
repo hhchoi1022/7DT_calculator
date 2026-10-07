@@ -25,7 +25,7 @@ st.set_page_config(page_title='7DT Exposure time / SNR', page_icon='📈', layou
 TYPE_OPTIONS = ['Point source', 'Extended source']
 SPECTRUM_CATEGORIES = ['Uploaded spectrum', 'Star', 'Galaxy', 'QSO', 'SN', 'Blackbody', 'Power law']
 SPECTRUM_CHOICES = {                        # category -> {what the user sees: template key}
-    'Star': {'O5V': 'Star: O5V', 'B0V': 'Star: B0V', 'A0V': 'Star: A0V', 'F0V': 'Star: F0V', 'G2V': 'Star: G2V', 'K0V': 'Star: K0V', 'M0V': 'Star: M0V', 'M4V': 'Star: M4V'},
+    'Star': {'O5V': 'Star: O5V', 'B0V': 'Star: B0V', 'A0V': 'Star: A0V', 'F0V': 'Star: F0V', 'G2V': 'Star: G2V', 'K0V': 'Star: K0V', 'M0V': 'Star: M0V', 'M4V': 'Star: M4V', 'sdB': 'Star: sdB'},
     'Galaxy': {'Spiral': 'Galaxy: Sb', 'Elliptical': 'Galaxy: Elliptical'},
     'SN': {'Ia (max)': 'SN Ia (max)', 'Ib/c (max)': 'SN Ib/c (max)', 'II-P (max)': 'SN II-P (max)'},
 }
