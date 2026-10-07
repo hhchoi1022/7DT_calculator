@@ -63,6 +63,14 @@
     "lam_min": 1150.0,
     "lam_max": 25000.0
   },
+  "Star: sdB": {
+    "file": "ck04_sdb_30000_g50.csv",
+    "category": "Star",
+    "source": "Castelli & Kurucz (2004) model atmosphere, STScI CDBS ck04models",
+    "note": "sdB (hot subdwarf B) approximated by the Teff = 30000 K, log g = 5.0, [M/H] = 0 model; low resolution (~20 A in the optical).",
+    "lam_min": 905.0,
+    "lam_max": 49900.0
+  },
   "Galaxy: Elliptical": {
     "file": "kc96_elliptical.csv",
     "category": "Galaxy",

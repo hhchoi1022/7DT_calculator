@@ -55,6 +55,14 @@ for sp in ['o5v', 'b0v', 'a0v', 'f0v', 'g2v', 'k0v', 'm0v', 'm4v']:
     write(f'Star: {sp.upper()}', w, f, {'file': f'pickles_{sp}.csv', 'category': 'Star', 'source': 'Pickles (1998) UVK stellar library, STScI CDBS',
                                          'note': f'{sp.upper()} main-sequence star.'})
 
+# ---- sdB: Castelli & Kurucz (2004) model atmosphere (Teff 30000 K, log g 5.0, solar) from the CDBS ck04 grid
+with fits.open(io.BytesIO(get(f'{CDBS}/ck04models/ckp00/ckp00_30000.fits'))) as h:
+    d = h[1].data
+    w, f = np.asarray(d['WAVELENGTH'], float), np.asarray(d['g50'], float)
+sel = (w >= 900) & (w <= 50000)
+write('Star: sdB', w[sel], f[sel], {'file': 'ck04_sdb_30000_g50.csv', 'category': 'Star', 'source': 'Castelli & Kurucz (2004) model atmosphere, STScI CDBS ck04models',
+                                   'note': 'sdB (hot subdwarf B) approximated by the Teff = 30000 K, log g = 5.0, [M/H] = 0 model; low resolution (~20 A in the optical).'})
+
 # ---- Kinney-Calzetti (1996) galaxy templates
 for key, label in [('elliptical', 'Elliptical'), ('s0', 'S0'), ('sa', 'Sa'), ('sb', 'Sb'), ('sc', 'Sc'), ('starb1', 'Starburst')]:
     w, f = fits_table(f'{CDBS}/kc96/{key}_template.fits')
