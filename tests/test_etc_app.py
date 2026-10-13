@@ -9,6 +9,7 @@ def test_etc_page_renders_both_modes():
     at.run()
     assert not at.exception, at.exception
     assert at.title[0].value == '7DT Exposure time / SNR'
+    assert at.selectbox(key='etc_spec').options == ['specall', 'specblue', 'specred'] and at.selectbox(key='etc_spec').value == 'specall'
     at.radio(key='etc_calc').set_value('Exposure time from SNR').run()
     assert not at.exception, at.exception
     at.selectbox(key='etc_type').set_value('Extended source').run()

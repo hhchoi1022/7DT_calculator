@@ -10,3 +10,12 @@ def test_overhead_page_renders():
     assert not at.exception, at.exception
     assert at.title[0].value == '7DT Overhead time'
     assert any('Filter change' in m.value for m in at.markdown)
+
+
+def test_overhead_autofocus_only_for_specred():
+    at = AppTest.from_file(str(Path(__file__).resolve().parent.parent / 'overhead_app.py'), default_timeout=120)
+    at.run()
+    assert any('Autofocus: none for Spec/specall' in c.value for c in at.caption)
+    at.selectbox(key='oh_spec').set_value('specred').run()
+    assert not at.exception, at.exception
+    assert any('once per filter' in c.value for c in at.caption)

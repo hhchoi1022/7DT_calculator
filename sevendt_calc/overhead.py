@@ -14,8 +14,9 @@ observed one after another. For one unit and one target:
 
 Per-event durations come from data/overhead.json.
 
-Autofocus: none for Spec/specall (the survey's default mode keeps the units focused), otherwise one
-autofocus per filter and unit (the number of filters of the mode times the autofocus overhead).
+Autofocus: only the modes listed under "autofocus_modes" in data/overhead.json (currently Spec/specred)
+run one autofocus per filter and unit (the number of filters of the mode times the autofocus overhead);
+every other mode runs none.
 """
 from __future__ import annotations
 
@@ -53,6 +54,7 @@ class OverheadConfig:
     readout: float = 10.0
     dispatch: float = 0.0                     # per target: observation setup and hand-over to the next target
     autofocus_history_duration_min: float = 60.0
+    autofocus_modes: tuple = ('Spec/specred',)    # Mode/submode labels that autofocus once per filter; all others never
     source: str = ''
 
     @classmethod
@@ -61,19 +63,22 @@ class OverheadConfig:
         with open(path, 'r') as f:
             raw = json.load(f)
         kwargs = {k: float(raw[k]) for k in ('autofocus', 'filter_change', 'slewing', 'readout', 'dispatch', 'autofocus_history_duration_min') if k in raw}
+        if 'autofocus_modes' in raw:
+            kwargs['autofocus_modes'] = tuple(str(m) for m in raw['autofocus_modes'])
         return cls(source=str(path), **kwargs)
 
     def as_dict(self) -> dict:
         return {
             'autofocus': self.autofocus, 'filter_change': self.filter_change,
             'slewing': self.slewing, 'readout': self.readout, 'dispatch': self.dispatch,
-            'autofocus_history_duration_min': self.autofocus_history_duration_min,
+            'autofocus_history_duration_min': self.autofocus_history_duration_min, 'autofocus_modes': list(self.autofocus_modes),
         }
 
 
-def allowed_autofocus_policies(obsmode: ObsMode) -> list[str]:
-    """Spec/specall: no autofocus; every other mode: once per filter and unit."""
-    return ['none'] if obsmode.is_specall else ['per_filter']
+def allowed_autofocus_policies(obsmode: ObsMode, config: 'OverheadConfig | None' = None) -> list[str]:
+    """Modes listed in the configuration's autofocus_modes: once per filter and unit; every other mode: none."""
+    cfg = config or OverheadConfig.load()
+    return ['per_filter'] if obsmode.label in cfg.autofocus_modes else ['none']
 
 
 @dataclass
@@ -84,6 +89,7 @@ class ObsRequest:
     count: int                     # frames per filter
     obsmode: ObsMode
     autofocus_policy: str = DEFAULT_AUTOFOCUS_POLICY
+    config: 'OverheadConfig | None' = None       # decides which modes autofocus (data/overhead.json when None)
     policy_forced: bool = field(default=False, init=False)
 
     def __post_init__(self):
@@ -93,7 +99,7 @@ class ObsRequest:
             raise ValueError('exptime must be >= 0 and count >= 1')
         if self.autofocus_policy not in AUTOFOCUS_POLICIES:
             raise ValueError(f'Unknown autofocus policy {self.autofocus_policy!r}')
-        allowed = allowed_autofocus_policies(self.obsmode)
+        allowed = allowed_autofocus_policies(self.obsmode, self.config)
         if self.autofocus_policy not in allowed:
             self.autofocus_policy = allowed[0]
             self.policy_forced = True

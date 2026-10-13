@@ -6,6 +6,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-$HOME/anaconda3/envs/7dtcalc/bin/python}"
 PORT="${PORT:-8510}"
+[ -f "$HERE/local.env" ] && source "$HERE/local.env"     # server-local settings (git-ignored), e.g. SEVENDT_CONFIG_OVERLAY
 export PYTHONNOUSERSITE=1
 export MPLBACKEND=Agg
 cd "$HERE"

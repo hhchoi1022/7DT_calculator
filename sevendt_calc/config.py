@@ -8,6 +8,10 @@ The folder defaults to /lyman/data1/7dt/configuration and can be overridden with
 SEVENDT_CONFIG_DIR environment variable. Paths written inside the config files refer to
 the control PC (/home/kds/TCSpy/configuration/...); they are remapped onto the folder
 above.
+
+SEVENDT_CONFIG_OVERLAY (optional) names a folder with the same layout: any file or mode
+folder present there is used instead of the live one. It serves a configuration change
+that is prepared but not yet applied to the live folder (e.g. a filter relocation).
 """
 from __future__ import annotations
 
@@ -33,15 +37,26 @@ def config_dir() -> Path:
     return Path(os.environ.get('SEVENDT_CONFIG_DIR', DEFAULT_CONFIG_DIR))
 
 
+def overlay_dir() -> Path | None:
+    value = os.environ.get('SEVENDT_CONFIG_OVERLAY', '').strip()
+    return Path(value).expanduser() if value else None
+
+
+def config_path(relative: str) -> Path:
+    """A configuration file or folder: the overlay copy when one exists there, otherwise the live one."""
+    overlay = overlay_dir()
+    if overlay is not None and (overlay / relative).exists():
+        return overlay / relative
+    return config_dir() / relative
+
+
 def remap_path(path_str: str) -> Path:
-    """Map a path written for the control PC onto the local configuration folder."""
+    """Map a path written for the control PC onto the local configuration folder (overlay first)."""
     path_str = str(path_str)
     p = Path(path_str)
-    if p.exists():
-        return p
     for prefix in REMOTE_PREFIXES:
         if path_str.startswith(prefix):
-            return config_dir() / path_str[len(prefix):].lstrip('/')
+            return config_path(path_str[len(prefix):].strip('/'))
     return p
 
 
@@ -65,7 +80,7 @@ class Site:
 
 
 def load_site() -> Site:
-    cfg = _read_json(config_dir() / 'observer.config')
+    cfg = _read_json(config_path('observer.config'))
     return Site(
         name='7DT',
         latitude=float(cfg['OBSERVER_LATITUDE']),
@@ -77,7 +92,7 @@ def load_site() -> Site:
 
 def load_target_constraints() -> dict:
     """Observability limits used by the scheduler (target.config)."""
-    cfg = _read_json(config_dir() / 'target.config')
+    cfg = _read_json(config_path('target.config'))
     return {
         'min_alt': float(cfg.get('TARGET_MINALT', 30)),
         'max_alt': float(cfg.get('TARGET_MAXALT', 88)),
@@ -88,7 +103,7 @@ def load_target_constraints() -> dict:
 def load_night_sun_altitude() -> float:
     """Sun altitude [deg] below which science observation is allowed (nightsession.config)."""
     try:
-        cfg = _read_json(config_dir() / 'nightsession.config')
+        cfg = _read_json(config_path('nightsession.config'))
         return float(cfg.get('NIGHTSESSION_SUNALT_OBSERVATION', -18))
     except (OSError, ValueError):
         return -18.0
@@ -97,7 +112,7 @@ def load_night_sun_altitude() -> float:
 # ------------------------------------------------------------------------ filters
 def load_filtinfo() -> dict[str, list[str]]:
     """Filters installed in each unit's wheel: {'7DT01': ['g', 'r', ...], ...}."""
-    raw = _read_json(config_dir() / 'filtinfo.dict')
+    raw = _read_json(config_path('filtinfo.dict'))
     return {str(unit): [str(f) for f in filters] for unit, filters in raw.items()}
 
 
@@ -114,7 +129,7 @@ def units_with_filter(filter_name: str, filtinfo: dict | None = None) -> list[st
 
 # -------------------------------------------------------------- observation modes
 def _mode_folder(config_name: str, key: str) -> Path:
-    cfg = _read_json(config_dir() / config_name)
+    cfg = _read_json(config_path(config_name))
     return remap_path(cfg[key])
 
 
@@ -148,14 +163,43 @@ def load_colormodes() -> dict[str, dict[str, list[str]]]:
     return _load_mode_files(colormode_folder(), '.colormode')
 
 
+PUBLIC_MODES_FILE = DATA_DIR / 'public_modes.json'
+
+
+def load_public_modes() -> dict:
+    """{'Spec': [names...] | None, 'Color': [...] | None} from data/public_modes.json (None = show every file)."""
+    try:
+        raw = _read_json(PUBLIC_MODES_FILE)
+    except (OSError, ValueError):
+        return {'Spec': None, 'Color': None}
+    out = {}
+    for mode in ('Spec', 'Color'):
+        names = raw.get(mode)
+        out[mode] = None if names is None else [str(n) for n in names]
+    return out
+
+
+def public_submodes(mode: str, available, public: dict | None = None) -> list[str]:
+    """
+    The sub-modes to offer on the public pages, in menu order (the first one is the default):
+    the names of public_modes.json that exist in `available`, or every available name
+    (default-first, then alphabetical) when the list is null.
+    """
+    public = public if public is not None else load_public_modes()
+    names = public.get(mode)
+    available = list(available)
+    if names is None:
+        default = DEFAULT_SUBMODE.get(mode)
+        return sorted(available, key=lambda n: (n != default, n))
+    return [n for n in names if n in available]
+
+
 def submode_options(mode: str) -> list[str]:
     """Selectable sub-modes for a mode. Deep has no predefined list (filters are typed)."""
     if mode == 'Spec':
-        names = list(load_specmodes())
-        return sorted(names, key=lambda n: (n != 'specall', n))
+        return public_submodes('Spec', load_specmodes())
     if mode == 'Color':
-        names = list(load_colormodes())
-        return sorted(names, key=lambda n: (n != 'gri', n))
+        return public_submodes('Color', load_colormodes())
     if mode == 'Deep':
         return []
     raise ValueError(f'Unknown observation mode: {mode}')
