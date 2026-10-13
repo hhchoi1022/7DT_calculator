@@ -41,7 +41,7 @@ def feedback_note():
 def live_config() -> dict:
     """The 7DT configuration folder is re-read at most once a minute."""
     return {'site': config.load_site(), 'filtinfo': config.load_filtinfo(), 'specmodes': config.load_specmodes(),
-            'colormodes': config.load_colormodes(), 'constraints': vis.Constraints.from_config()}
+            'colormodes': config.load_colormodes(), 'constraints': vis.Constraints.from_config(), 'public_modes': config.load_public_modes()}
 
 
 def site_key(site) -> tuple:
@@ -325,10 +325,10 @@ def obsmode_selector(prefix: str, cfg: dict, label: str = 'Observation mode'):
     c1, c2 = st.columns([1, 2])
     mode = c1.selectbox(label, config.MODES, key=f'{prefix}_mode')
     if mode == 'Spec':
-        options = sorted(cfg['specmodes'], key=lambda n: (n != 'specall', n))
+        options = config.public_submodes('Spec', cfg['specmodes'], cfg['public_modes'])      # data/public_modes.json: list = menu order
         sub = c2.selectbox('Sub-mode (specmode file)', options, key=f'{prefix}_spec')
     elif mode == 'Color':
-        options = sorted(cfg['colormodes'], key=lambda n: (n != 'gri', n))
+        options = config.public_submodes('Color', cfg['colormodes'], cfg['public_modes'])
         sub = c2.selectbox('Sub-mode (colormode file)', options, key=f'{prefix}_color')
     else:
         installed = config.installed_filters(cfg['filtinfo'])
@@ -384,6 +384,10 @@ def obsmode_png(mode: str, submode: str, table: tuple) -> bytes:
 def mode_folder_signature() -> tuple:
     """Names and modification times of the mode files: changes here re-trigger the warm-up."""
     sig = []
+    try:
+        sig.append(('public_modes.json', int(config.PUBLIC_MODES_FILE.stat().st_mtime)))
+    except OSError:
+        pass
     for folder, suffix in ((config.specmode_folder(), '.specmode'), (config.colormode_folder(), '.colormode')):
         try:
             sig += [(f.name, int(f.stat().st_mtime)) for f in sorted(folder.glob(f'*{suffix}'))]
@@ -402,8 +406,11 @@ def warm_mode_figures(signature: tuple = ()) -> bool:
         try:
             cfg = live_config.__wrapped__() if hasattr(live_config, '__wrapped__') else live_config()
         except Exception:
-            cfg = {'filtinfo': config.load_filtinfo(), 'specmodes': config.load_specmodes(), 'colormodes': config.load_colormodes()}
-        jobs = [('Spec', name) for name in cfg['specmodes']] + [('Color', name) for name in cfg['colormodes']] + [('Deep', 'g,r,i')]
+            cfg = {'filtinfo': config.load_filtinfo(), 'specmodes': config.load_specmodes(), 'colormodes': config.load_colormodes(),
+                   'public_modes': config.load_public_modes()}
+        public = cfg.get('public_modes') or {}
+        jobs = ([('Spec', n) for n in config.public_submodes('Spec', cfg['specmodes'], public)]
+                + [('Color', n) for n in config.public_submodes('Color', cfg['colormodes'], public)] + [('Deep', 'g,r,i')])
         for mode, sub in jobs:
             try:
                 om = config.resolve_obsmode(mode, sub, filtinfo=cfg['filtinfo'], specmodes=cfg['specmodes'], colormodes=cfg['colormodes'])

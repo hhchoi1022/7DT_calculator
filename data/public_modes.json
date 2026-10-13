@@ -1,0 +1,9 @@
+{
+  "_description": "Observation modes offered on the public pages (ETC, Overhead). The order of a list is the menu order and its first entry is the default selection. null = every mode file of the TCSpy folder. Names listed here but missing in the folder are skipped. The Mode builder always shows every file.",
+  "Spec": [
+    "specall",
+    "specblue",
+    "specred"
+  ],
+  "Color": null
+}

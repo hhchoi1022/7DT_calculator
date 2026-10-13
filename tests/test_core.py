@@ -116,15 +116,28 @@ def test_overhead_specall_two_filters():
 
 
 def test_overhead_autofocus_rule():
+    cfg = overhead.OverheadConfig.load()
+    assert cfg.autofocus_modes == ('Spec/specred',)
     om_gri = config.resolve_obsmode('Color', 'gri')
-    req = overhead.ObsRequest('a', 60, 3, om_gri, 'none')
-    assert req.autofocus_policy == 'per_filter' and req.policy_forced
-    assert overhead.estimate([req]).counts()['n_autofocus'] == 1            # gri: one filter per unit
+    req = overhead.ObsRequest('a', 60, 3, om_gri, 'per_filter')
+    assert req.autofocus_policy == 'none' and req.policy_forced                # only the listed modes autofocus
+    assert overhead.estimate([req]).counts()['n_autofocus'] == 0
     deep = overhead.ObsRequest('d', 60, 1, config.resolve_obsmode('Deep', 'g,r,i'))
-    assert overhead.estimate([deep]).counts()['n_autofocus'] == 3          # three filters per unit
-    om = config.resolve_obsmode('Spec', 'specall')
-    res = overhead.estimate([overhead.ObsRequest('a', 100, 5, om, 'per_filter'), overhead.ObsRequest('b', 100, 5, om)])
-    assert [t.counts()['n_autofocus'] for t in res.targets] == [0, 0]       # specall: never
+    assert overhead.estimate([deep]).counts()['n_autofocus'] == 0
+    for name, n_expected in (('specall', 0), ('specblue', 0), ('specred', None)):
+        om = config.resolve_obsmode('Spec', name)
+        res = overhead.estimate([overhead.ObsRequest('a', 100, 5, om, 'per_filter'), overhead.ObsRequest('b', 100, 5, om, 'none')])
+        counts = [tb.counts()['n_autofocus'] for tb in res.targets]
+        if n_expected == 0:
+            assert counts == [0, 0], name
+        else:
+            assert counts[0] == om.n_filters_per_unit and counts[1] == om.n_filters_per_unit, name   # specred: once per filter, forced on
+    custom = overhead.OverheadConfig(autofocus_modes=('Color/gri',))
+    assert overhead.allowed_autofocus_policies(om_gri, custom) == ['per_filter']
+
+
+def test_public_spec_order():
+    assert config.load_public_modes()['Spec'] == ['specall', 'specblue', 'specred']
 
 
 # ---------------------------------------------------------------- visibility
@@ -244,3 +257,27 @@ def test_tile_id_resolving():
         assert 'no tile T99999' in str(exc)
     else:
         raise AssertionError('T99999 should not resolve')
+
+
+def test_public_submodes_filter_and_order():
+    available = ['calib_mb', 'specall', 'specblue', 'specnew', 'specred']
+    assert config.public_submodes('Spec', available, {'Spec': ['specred', 'specall', 'specblue', 'ghost'], 'Color': None}) == ['specred', 'specall', 'specblue']
+    assert config.public_submodes('Spec', available, {'Spec': None, 'Color': None}) == ['specall', 'calib_mb', 'specblue', 'specnew', 'specred']
+    assert config.public_submodes('Color', ['ri', 'gri', 'g'], {'Spec': None, 'Color': None}) == ['gri', 'g', 'ri']
+    public = config.load_public_modes()                       # the repository file
+    assert public['Spec'] == ['specall', 'specblue', 'specred'] and public['Color'] is None
+    assert config.submode_options('Spec') == [n for n in public['Spec'] if n in config.load_specmodes()]
+
+
+def test_config_overlay(tmp_path, monkeypatch):
+    overlay = tmp_path / 'overlay'
+    (overlay / 'specmode' / '29990101').mkdir(parents=True)
+    (overlay / 'filtinfo.dict').write_text('{"7DT01": ["g", "r", "i", "m400", "Slot5", "Slot6", "Slot7", "Slot8", "m769w"]}')
+    (overlay / 'specmode.config').write_text('{"SPECMODE_FOLDER": "/home/kds/TCSpy/configuration/specmode/29990101/"}')
+    (overlay / 'specmode' / '29990101' / 'only.specmode').write_text('{"7DT01": ["g", "m400"]}')
+    monkeypatch.setenv('SEVENDT_CONFIG_OVERLAY', str(overlay))
+    assert config.load_filtinfo() == {'7DT01': ['g', 'r', 'i', 'm400', 'Slot5', 'Slot6', 'Slot7', 'Slot8', 'm769w']}
+    assert config.specmode_folder() == overlay / 'specmode' / '29990101' and list(config.load_specmodes()) == ['only']
+    assert config.load_site().name                      # observer.config is not in the overlay: read from the live folder
+    monkeypatch.delenv('SEVENDT_CONFIG_OVERLAY')
+    assert '7DT16' in config.load_filtinfo()

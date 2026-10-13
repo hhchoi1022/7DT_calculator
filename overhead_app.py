@@ -28,10 +28,10 @@ def main():
     cfg_oh = overhead.OverheadConfig.load()          # 7DT defaults from data/overhead.json
     if om is None:
         return
-    policy = overhead.allowed_autofocus_policies(om)[0]
-    st.caption('Autofocus: none for Spec/specall.' if policy == 'none' else f'Autofocus: once per filter of the mode ({om.n_filters_per_unit} per unit).')
+    policy = overhead.allowed_autofocus_policies(om, cfg_oh)[0]
+    st.caption(f'Autofocus: none for {om.label}.' if policy == 'none' else f'Autofocus: once per filter of the mode ({om.n_filters_per_unit} per unit).')
 
-    result = overhead.estimate([overhead.ObsRequest('observation', exptime, count, om, policy)], cfg_oh)
+    result = overhead.estimate([overhead.ObsRequest('observation', exptime, count, om, policy, config=cfg_oh)], cfg_oh)
     m = st.columns(4)
     m[0].metric('Total observation time', overhead.format_duration(result.total))
     m[1].metric('Open-shutter time', overhead.format_duration(result.science_time))

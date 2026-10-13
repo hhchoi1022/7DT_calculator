@@ -73,7 +73,7 @@ sevendt_calc/            core package, no Streamlit imports
 ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
-data/                    depth model JSON, overhead.json, final_tiles.txt, transmission/ curves, templates/, samples
+data/                    depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/ curves, templates/, samples
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -87,7 +87,9 @@ tests/                   test_core.py (models) + one AppTest file per page
 like `Slot6` are empty positions), `specmode.config` -> `specmode/<date>/*.specmode`,
 `colormode.config` -> `colormode/<date>/*.colormode`, `target.config`, `nightsession.config`.
 Paths inside those files are written for the control PC (`/home/kds/TCSpy/configuration/...`) and are
-remapped onto the local folder. The folder is read-only for this project: never write into it, and
+remapped onto the local folder. `SEVENDT_CONFIG_OVERLAY` may name a folder with the same layout whose files
+take precedence (a prepared change not yet applied to the live folder); the run scripts source a git-ignored
+`local.env` for such server-local settings. The folder is read-only for this project: never write into it, and
 never copy its contents into the repo (some files hold credentials). Mode files are JSON objects
 `{"7DT01": ["m650", "m769w"], ...}`, one unit per line; a filter may appear several times.
 
@@ -103,12 +105,15 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   Known limits: source shot noise is neglected (a few percent at SNR 10, large at SNR > 100).
 - **Visibility**: astroplan Observer at the site from `observer.config`; a night is defined by the Sun
   altitude in `nightsession.config`; observability limits (altitude, Moon separation) from `target.config`.
-- **Overhead**: per-unit sequence, units in parallel, the slowest unit counts; autofocus none for
-  Spec/specall, otherwise once per filter; components in `data/overhead.json` (values from TCSpy logs).
+- **Overhead**: per-unit sequence, units in parallel, the slowest unit counts; autofocus once per filter
+  only for the modes in `autofocus_modes` of `data/overhead.json` (currently Spec/specred), none otherwise;
+  components in the same file (values from TCSpy logs).
 - **Tiles**: gnomonic projection about the target, shapely polygons, every overlapping tile listed,
   warning within 4 arcmin of a tile edge. Tile IDs run `T00000` to `T25471`.
-- **Modes**: `Spec` (specmode files, default `specall`), `Color` (colormode files), `Deep` (user filter list
-  observed by every unit that has them). `ObsMode.filter_multiplicity()` gives the unit count per filter.
+- **Modes**: `Spec` (specmode files), `Color` (colormode files), `Deep` (user filter list observed by every
+  unit that has them). `ObsMode.filter_multiplicity()` gives the unit count per filter. The modes offered on the
+  ETC and Overhead pages are those listed in `data/public_modes.json` (list order = menu order, first entry =
+  default; `null` = every file). The Mode builder always lists every file.
 
 ## Working rules (decisions already made with the telescope operator; keep them)
 
