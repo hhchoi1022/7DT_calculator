@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pytest
+from pathlib import Path
 from astropy.time import Time
 
 from sevendt_calc import config, etc, overhead, photometry as ph, targets as tg, tiles as tl
@@ -281,3 +282,13 @@ def test_config_overlay(tmp_path, monkeypatch):
     assert config.load_site().name                      # observer.config is not in the overlay: read from the live folder
     monkeypatch.delenv('SEVENDT_CONFIG_OVERLAY')
     assert '7DT16' in config.load_filtinfo()
+
+
+def test_remap_path_forms(monkeypatch):
+    monkeypatch.delenv('SEVENDT_CONFIG_OVERLAY', raising=False)
+    base = config.config_dir()
+    for text in ('/home/kds/TCSpy/configuration/specmode/20261013/', '~/TCSpy/configuration/specmode/20261013/',
+                 '/home/kds/tcspy/configuration/specmode/20261013', '/opt/TCSpy/configuration/specmode/20261013/'):
+        assert config.remap_path(text) == base / 'specmode' / '20261013', text
+    assert config.remap_path('/tmp/elsewhere') == Path('/tmp/elsewhere')
+    assert config.specmode_folder().is_dir() and 'specall' in config.load_specmodes()
