@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,13 +52,19 @@ def config_path(relative: str) -> Path:
 
 
 def remap_path(path_str: str) -> Path:
-    """Map a path written for the control PC onto the local configuration folder (overlay first)."""
-    path_str = str(path_str)
-    p = Path(path_str)
+    """
+    Map a path written for the control PC onto the local configuration folder (overlay first).
+    Handles the forms seen in the TCSpy files: /home/kds/TCSpy/configuration/..., ~/TCSpy/configuration/...
+    and any other prefix ending in TCSpy/configuration (case-insensitive); other paths are returned as they are.
+    """
+    path_str = str(path_str).strip()
     for prefix in REMOTE_PREFIXES:
         if path_str.startswith(prefix):
             return config_path(path_str[len(prefix):].strip('/'))
-    return p
+    m = re.search(r'(?i)tcspy/configuration/(.*)$', path_str)
+    if m:
+        return config_path(m.group(1).strip('/'))
+    return Path(path_str).expanduser()
 
 
 def _read_json(path: Path) -> dict:
