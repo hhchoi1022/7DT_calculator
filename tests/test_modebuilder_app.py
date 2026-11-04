@@ -74,25 +74,26 @@ def test_modebuilder_page_renders():
     assert not at.exception, at.exception
     assert any('newmode.specmode' in m.value for m in at.markdown)
     assert not at.error
-    assert at.session_state['mb_seq']['7DT01'] == ['m650', 'm769w']
+    base = list(config.load_specmodes()['specall']['7DT01'])      # the live specall (its content changes over time)
+    assert len(base) == 2 and at.session_state['mb_seq']['7DT01'] == base
     def click(row, unit):                         # a cell selection in the grid table
         at.session_state['mb_grid'] = {'selection': {'rows': [], 'columns': [], 'cells': [[row, unit]]}}
         at.run()
         assert not at.exception, at.exception
     click(0, '7DT01')                             # slot 1 of 7DT01 = g -> appended
-    assert at.session_state['mb_seq']['7DT01'] == ['m650', 'm769w', 'g']
+    assert at.session_state['mb_seq']['7DT01'] == base + ['g']
     click(0, '7DT01')                             # again: g twice
-    assert at.session_state['mb_seq']['7DT01'] == ['m650', 'm769w', 'g', 'g']
-    assert '"7DT01": ["m650", "m769w", "g", "g"]' in at.code[0].value
+    assert at.session_state['mb_seq']['7DT01'] == base + ['g', 'g']
+    assert '"7DT01": [' + ', '.join(f'"{f}"' for f in base + ['g', 'g']) + ']' in at.code[0].value
     click(5, '7DT01')                             # slot 6 of 7DT01 is empty: nothing happens
-    assert at.session_state['mb_seq']['7DT01'] == ['m650', 'm769w', 'g', 'g']
-    click(9, '7DT01')                             # Order 1 cell of 7DT01 (m650): removed
-    assert at.session_state['mb_seq']['7DT01'] == ['m769w', 'g', 'g']
+    assert at.session_state['mb_seq']['7DT01'] == base + ['g', 'g']
+    click(9, '7DT01')                             # Order 1 cell of 7DT01: removed
+    assert at.session_state['mb_seq']['7DT01'] == base[1:] + ['g', 'g']
     assert at.session_state['mb_grid']['selection']['cells'][0][1] in ('7DT01', '7DT02')   # parked on the spacer row
     click(11, '7DT01')                            # Order 3 cell (the last g): removed
-    assert at.session_state['mb_seq']['7DT01'] == ['m769w', 'g']
-    click(13, '7DT01')                            # the spacer row: ignored
-    assert at.session_state['mb_seq']['7DT01'] == ['m769w', 'g']
+    assert at.session_state['mb_seq']['7DT01'] == base[1:] + ['g']
+    click(13, '7DT01')                            # beyond the table: ignored
+    assert at.session_state['mb_seq']['7DT01'] == base[1:] + ['g']
     assert not any('different numbers of filters' in w.value for w in at.warning)   # all units have 2 again
     click(0, '7DT01')                             # a third filter on 7DT01 only
     assert any('different numbers of filters' in w.value for w in at.warning)
