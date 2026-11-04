@@ -292,3 +292,18 @@ def test_remap_path_forms(monkeypatch):
         assert config.remap_path(text) == base / 'specmode' / '20261013', text
     assert config.remap_path('/tmp/elsewhere') == Path('/tmp/elsewhere')
     assert config.specmode_folder().is_dir() and 'specall' in config.load_specmodes()
+
+
+def test_config_dir_from_settings(tmp_path, monkeypatch):
+    live = config.config_dir()
+    monkeypatch.delenv('SEVENDT_CONFIG_DIR', raising=False)
+    assert config.settings()['config_dirs'][0] == '/lyman/data1/7dt/configuration'
+    monkeypatch.setattr(config, 'settings', lambda: {'config_dirs': ['/nonexistent/first', str(tmp_path), str(live)]})
+    assert config.config_dir() == tmp_path                     # the first candidate that exists
+    monkeypatch.setattr(config, 'settings', lambda: {'config_dirs': ['/nonexistent/only']})
+    assert config.config_dir() == Path(config.DEFAULT_CONFIG_DIR)
+    monkeypatch.setenv('SEVENDT_CONFIG_DIR', str(live))
+    assert config.config_dir() == live                         # the environment variable wins
+    monkeypatch.setattr(config, 'settings', lambda: {'config_overlay': str(tmp_path)})
+    monkeypatch.delenv('SEVENDT_CONFIG_OVERLAY', raising=False)
+    assert config.overlay_dir() == tmp_path

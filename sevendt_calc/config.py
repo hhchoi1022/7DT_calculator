@@ -4,13 +4,13 @@ Live access to the 7DT (TCSpy) configuration folder.
 Everything is read from the folder at call time, so changes made by the observatory
 (new specmode folder, new filters) show up without restarting the calculator.
 
-The folder defaults to /lyman/data1/7dt/configuration and can be overridden with the
-SEVENDT_CONFIG_DIR environment variable. Paths written inside the config files refer to
+The folder is the first existing entry of "config_dirs" in data/settings.json (default
+/lyman/data1/7dt/configuration); the SEVENDT_CONFIG_DIR environment variable overrides it. Paths written inside the config files refer to
 the control PC (/home/kds/TCSpy/configuration/...); they are remapped onto the folder
 above.
 
-SEVENDT_CONFIG_OVERLAY (optional) names a folder with the same layout: any file or mode
-folder present there is used instead of the live one. It serves a configuration change
+"config_overlay" in data/settings.json or SEVENDT_CONFIG_OVERLAY (optional) names a folder
+with the same layout: any file or mode folder present there is used instead of the live one. It serves a configuration change
 that is prepared but not yet applied to the live folder (e.g. a filter relocation).
 """
 from __future__ import annotations
@@ -34,12 +34,31 @@ MODES = ('Spec', 'Deep', 'Color')
 DEFAULT_SUBMODE = {'Spec': 'specall', 'Color': 'gri', 'Deep': 'g,r,i'}
 
 
+SETTINGS_FILE = DATA_DIR / 'settings.json'
+
+
+def settings() -> dict:
+    """data/settings.json (repository-level settings); an empty dict when the file is missing or broken."""
+    try:
+        return _read_json(SETTINGS_FILE)
+    except (OSError, ValueError):
+        return {}
+
+
 def config_dir() -> Path:
-    return Path(os.environ.get('SEVENDT_CONFIG_DIR', DEFAULT_CONFIG_DIR))
+    """SEVENDT_CONFIG_DIR if set, else the first existing folder of settings()['config_dirs'], else the default."""
+    env = os.environ.get('SEVENDT_CONFIG_DIR', '').strip()
+    if env:
+        return Path(env).expanduser()
+    for candidate in settings().get('config_dirs') or []:
+        p = Path(str(candidate)).expanduser()
+        if p.is_dir():
+            return p
+    return Path(DEFAULT_CONFIG_DIR)
 
 
 def overlay_dir() -> Path | None:
-    value = os.environ.get('SEVENDT_CONFIG_OVERLAY', '').strip()
+    value = os.environ.get('SEVENDT_CONFIG_OVERLAY', '').strip() or str(settings().get('config_overlay') or '').strip()
     return Path(value).expanduser() if value else None
 
 

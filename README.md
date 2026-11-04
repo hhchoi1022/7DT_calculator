@@ -73,7 +73,7 @@ sevendt_calc/            core package, no Streamlit imports
 ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
-data/                    depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/ curves, templates/, samples
+data/                    settings.json (configuration folder), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -82,14 +82,15 @@ tests/                   test_core.py (models) + one AppTest file per page
 
 ## Configuration source
 
-`sevendt_calc.config` reads `/lyman/data1/7dt/configuration` (override with the environment variable
-`SEVENDT_CONFIG_DIR`): `observer.config` (site), `filtinfo.dict` (filters in each unit's wheel; names
+`sevendt_calc.config` reads the first existing folder listed under `config_dirs` in `data/settings.json`
+(default `/lyman/data1/7dt/configuration`; add each server's mount path there). The environment variable
+`SEVENDT_CONFIG_DIR` overrides it. Files read: `observer.config` (site), `filtinfo.dict` (filters in each unit's wheel; names
 like `Slot6` are empty positions), `specmode.config` -> `specmode/<date>/*.specmode`,
 `colormode.config` -> `colormode/<date>/*.colormode`, `target.config`, `nightsession.config`.
 Paths inside those files are written for the control PC (`/home/kds/TCSpy/configuration/...`) and are
-remapped onto the local folder. `SEVENDT_CONFIG_OVERLAY` may name a folder with the same layout whose files
-take precedence (a prepared change not yet applied to the live folder); the run scripts source a git-ignored
-`local.env` for such server-local settings. The folder is read-only for this project: never write into it, and
+remapped onto the local folder. `config_overlay` in `data/settings.json` (or `SEVENDT_CONFIG_OVERLAY`) may name a folder with the same
+layout whose files take precedence (a prepared change not yet applied to the live folder); the run scripts also
+source a git-ignored `local.env` for server-local environment variables. The folder is read-only for this project: never write into it, and
 never copy its contents into the repo (some files hold credentials). Mode files are JSON objects
 `{"7DT01": ["m650", "m769w"], ...}`, one unit per line; a filter may appear several times.
 
