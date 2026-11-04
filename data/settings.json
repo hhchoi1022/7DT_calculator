@@ -1,0 +1,7 @@
+{
+  "_description": "Where the live TCSpy configuration is read from. config_dirs are tried in order and the first existing folder is used, so one file can serve several servers (add each server's mount path). config_overlay (optional) names a folder whose files take precedence over the live ones. The environment variables SEVENDT_CONFIG_DIR and SEVENDT_CONFIG_OVERLAY still override both.",
+  "config_dirs": [
+    "/lyman/data1/7dt/configuration"
+  ],
+  "config_overlay": ""
+}
