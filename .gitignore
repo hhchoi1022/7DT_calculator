@@ -5,4 +5,4 @@ __pycache__/
 data/cache/
 *.log
 nohup.out
-local.env
+local.env*
