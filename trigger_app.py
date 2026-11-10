@@ -211,14 +211,11 @@ def tile_matcher_dialog(ts: trigger.TriggerSettings):
         return
     excluded, added = ss.setdefault('tm_excluded', set()), ss.setdefault('tm_added', set())
     chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
-    st.markdown(f'**{len(chosen)} tile(s) selected** around RA {m.ra:.4f}, Dec {m.dec:+.4f}'
-                + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°')
-                + (f' ({len(excluded)} excluded)' if excluded else '') + (f' ({len(added)} added)' if added else ''))
-    st.caption('Click a tile in the map to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
-    fig = tiles.plot_tile_match_interactive(m, excluded=excluded, added=added, clickable=True)
-    ev = st.plotly_chart(fig, width='stretch', config={'displaylogo': False, 'scrollZoom': True}, on_select='rerun', selection_mode='points',
-                         key=f'tm_plot_{ss.get("tm_plot_ver", 0)}')
-    points = ev.selection.points if ev is not None else []
+    summary = st.empty()
+    st.caption('Click the circle on a tile to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
+    ver = ss.get('tm_plot_ver', 0)
+    state = ss.get(f'tm_plot_{ver}')                               # the click of the previous run, applied before the chart is drawn
+    points = (state or {}).get('selection', {}).get('points', []) if isinstance(state, dict) else []
     clicked = {p.get('customdata') for p in points if p.get('customdata')}
     if clicked:
         matched_ids = {t.id for t in m.tiles}
@@ -227,8 +224,13 @@ def tile_matcher_dialog(ts: trigger.TriggerSettings):
                 excluded.symmetric_difference_update({tid})
             else:
                 added.symmetric_difference_update({tid})
-        ss['tm_plot_ver'] = ss.get('tm_plot_ver', 0) + 1          # a fresh chart: the next click starts from no selection
-        st.rerun(scope='fragment')
+        ver = ss['tm_plot_ver'] = ver + 1                          # a fresh chart: the next click starts from no selection
+        chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
+    fig = tiles.plot_tile_match_interactive(m, excluded=excluded, added=added, clickable=True)
+    st.plotly_chart(fig, width='stretch', config={'displaylogo': False, 'scrollZoom': True}, on_select='rerun', selection_mode='points', key=f'tm_plot_{ver}')
+    summary.markdown(f'**{len(chosen)} tile(s) selected** around RA {m.ra:.4f}, Dec {m.dec:+.4f}'
+                     + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°')
+                     + (f' ({len(excluded)} excluded)' if excluded else '') + (f' ({len(added)} added)' if added else ''))
     if chosen:
         rows = [t.row() for t in m.tiles if t.id in chosen] + [{'tile': tid, 'ra_center': float(get_tiles().ra[get_tiles()._index[tid]]), 'dec_center': float(get_tiles().dec[get_tiles()._index[tid]]), 'tile_fraction_in_circle': None} for tid in sorted(added)]
         table = pd.DataFrame(rows)[['tile', 'ra_center', 'dec_center', 'tile_fraction_in_circle']].rename(columns={'tile_fraction_in_circle': 'fraction inside the area'})

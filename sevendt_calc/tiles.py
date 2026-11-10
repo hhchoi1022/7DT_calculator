@@ -302,16 +302,17 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
         cx, cy = poly.centroid.x, poly.centroid.y
         tid_to_center[tid] = (cx, cy)
         t = matched.get(tid)
+        thick = 1.5 if clickable else 1.0                       # clickable maps: every outline heavier, like buttons
         if t is not None and tid in excluded:
-            color, fill, width, label_color = 'rgba(120,120,120,0.9)', 'rgba(120,120,120,0.15)', 1.5, '#666666'
+            color, fill, width, label_color = 'rgba(120,120,120,0.9)', 'rgba(120,120,120,0.15)', 2.0 * thick, '#666666'
         elif t is None and tid in added:
-            color, fill, width, label_color = 'rgba(44,160,44,0.95)', 'rgba(44,160,44,0.18)', 2.5, '#1f7a1f'
+            color, fill, width, label_color = 'rgba(44,160,44,0.95)', 'rgba(44,160,44,0.22)', 3.0 * thick, '#1f7a1f'
         elif t is None:
-            color, fill, width, label_color = 'rgba(31,119,180,0.8)', 'rgba(31,119,180,0.12)', 1, 'rgba(31,119,180,0.9)'
+            color, fill, width, label_color = 'rgba(31,119,180,0.8)', 'rgba(31,119,180,0.12)', 1.2 * thick, 'rgba(31,119,180,0.9)'
         else:
             color = 'rgba(255,140,0,0.95)' if t.near_edge else 'rgba(214,39,40,0.95)'
-            fill = 'rgba(255,140,0,0.18)' if t.near_edge else 'rgba(214,39,40,0.18)'
-            width, label_color = 2.5, ('#cc6a00' if t.near_edge else '#b22222')
+            fill = 'rgba(255,140,0,0.22)' if t.near_edge else 'rgba(214,39,40,0.22)'
+            width, label_color = 2.5 * thick, ('#cc6a00' if t.near_edge else '#b22222')
         fig.add_trace(go.Scatter(x=x, y=y, mode='lines', fill='toself', fillcolor=fill, line=dict(color=color, width=width),
                                  hoveron='fills', name=tid, showlegend=False, text=tid,
                                  hovertemplate=_tile_hover(tid, t) + '<extra></extra>'))
@@ -323,9 +324,11 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
             fig.add_annotation(x=cx, y=cy, text=label, showarrow=False, font=dict(size=9 if t is None else 10, color=label_color))
     if clickable:
         ids = [tid for tid, (cx, cy) in tid_to_center.items() if abs(cx) < extent and abs(cy) < extent]
-        fig.add_trace(go.Scatter(x=[tid_to_center[i][0] for i in ids], y=[tid_to_center[i][1] for i in ids], mode='markers', customdata=ids,
-                                 marker=dict(size=30, color='rgba(0,0,0,0.03)', line=dict(width=0)), name='tiles', showlegend=False,
-                                 hovertemplate='%{customdata}: click to include / exclude<extra></extra>'))
+        colors = ['rgba(120,120,120,0.9)' if i in excluded else ('rgba(44,160,44,0.95)' if i in added else ('rgba(214,39,40,0.95)' if i in matched else 'rgba(31,119,180,0.85)')) for i in ids]
+        actions = ['click to include again' if (i in excluded or (i not in matched and i not in added)) else 'click to exclude' for i in ids]
+        fig.add_trace(go.Scatter(x=[tid_to_center[i][0] for i in ids], y=[tid_to_center[i][1] + 0.22 for i in ids], mode='markers', customdata=ids, text=actions,
+                                 marker=dict(size=16, symbol='circle', color='rgba(255,255,255,0.9)', line=dict(width=2.5, color=colors)),
+                                 name='tiles', showlegend=False, hovertemplate='<b>%{customdata}</b>: %{text}<extra></extra>'))
     if m.ellipse is not None and m.shape is not None:
         bx, by = m.shape.exterior.xy
         a, b, pa = m.ellipse
