@@ -46,19 +46,6 @@ def _frame(rows, columns) -> pd.DataFrame:
     return df
 
 
-def _missing_required(df: pd.DataFrame) -> list:
-    """Per row: 'missing: ...' naming the empty required columns (rows with no content at all are left blank)."""
-    out = []
-    for _, r in df.iterrows():
-        values = {c: _text(r.get(c)) for c in trigger.REQUIRED}
-        if not any(values.values()):
-            out.append('')
-            continue
-        missing = [trigger.SHORT_LABELS.get(c, c) for c, v in values.items() if not v]
-        out.append('missing: ' + ', '.join(missing) if missing else '')
-    return out
-
-
 def _date_text(v) -> str:
     if v is None or (not isinstance(v, str) and pd.isna(v)):
         return ''
@@ -183,27 +170,24 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         columns_help()
     with left:
         base = ss['tr_rows']
-        status = _missing_required(base)
-        view = base.copy()
-        view.insert(0, 'Check', status)
-        css = pd.DataFrame('', index=view.index, columns=view.columns)
-        css['Check'] = ['background-color: #ffb3b3; color: #7a0000; font-weight: 600' if v else 'background-color: #e8f5e9' for v in status]
-        col_cfg = {'Check': st.column_config.TextColumn('Check', help='Red: a required column (object name, RA, Dec, exposure time, frames) is empty.', width=240)}
+        col_cfg = {}
         for c in base.columns:
             f = trigger.FIELD_BY_NAME.get(c)
             if c in DATE_COLUMNS:
                 col_cfg[c] = st.column_config.DatetimeColumn(trigger.LABELS.get(c, c), help=f.help if f else None, format='YYYY-MM-DDTHH:mm:ss', step=60)
             else:
-                col_cfg[c] = st.column_config.TextColumn(trigger.LABELS.get(c, c), help=f.help if f else None, required=bool(f and f.required))
-        edited = st.data_editor(view.style.apply(lambda _: css, axis=None), num_rows='dynamic', hide_index=False, width='stretch',
-                                column_config=col_cfg, disabled=['Check'], key=f'tr_editor_{ss["tr_version"]}')
-        edited = edited.drop(columns=['Check'], errors='ignore')
+                # Only the object name is marked as required in the editor ("Please fill out this cell"): the editor
+                # withholds a new row until its required cells are filled, so marking RA/Dec, exposure time or frames
+                # would make such rows vanish when the table is redrawn (e.g. by "Resolve names"). The validation
+                # below still demands every required column and marks it in the preview.
+                col_cfg[c] = st.column_config.TextColumn(trigger.LABELS.get(c, c), help=f.help if f else None, required=(c == 'objname'))
+        edited = st.data_editor(base, num_rows='dynamic', hide_index=False, width='stretch', column_config=col_cfg, key=f'tr_editor_{ss["tr_version"]}')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
         b2.caption('Object name, RA/Dec, exposure time and frames are required. RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. '
                    f'Exposure time and frames: one number each, applied to every filter of the mode (standard {int(ts.default_exptime)} s and {ts.default_count} frames). '
                    'Dates are optional (UTC). Use the last (empty) row to add a target; select rows and press Delete to remove them.')
-    if len(edited) != len(base) or _missing_required(edited) != status:      # rows added/removed or a required cell filled/cleared: redraw the marks
+    if len(edited) != len(base):                      # rows added or removed: renumber and re-mount
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
         st.rerun()
     if resolve:
