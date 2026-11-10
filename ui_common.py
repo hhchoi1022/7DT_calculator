@@ -29,12 +29,13 @@ YELLOW = 'background-color: #fff3b0; color: #000000'
 
 
 FEEDBACK_EMAIL = 'hhchoi1022@gmail.com'
+FEEDBACK_NAME = 'Hyeonho Choi'
 
 
 def feedback_note():
     """A small line at the very top of every page: where to report problems and send feedback."""
-    st.markdown(f"<div style='font-size:0.78rem;color:#777;margin-bottom:-0.6rem'>Problems or any feedback: "
-                f"<a href='mailto:{FEEDBACK_EMAIL}'>{FEEDBACK_EMAIL}</a></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.78rem;color:#777;margin-bottom:-0.6rem'>Problems or any feedback: {FEEDBACK_NAME} "
+                f"(<a href='mailto:{FEEDBACK_EMAIL}'>{FEEDBACK_EMAIL}</a>)</div>", unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
