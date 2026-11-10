@@ -23,10 +23,47 @@ RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
 # ------------------------------------------------------------------ state helpers
+DATE_COLUMNS = ('obs_startdate', 'obs_enddate')
+
+
 def _frame(rows, columns) -> pd.DataFrame:
-    df = pd.DataFrame(rows, dtype=str).reindex(columns=columns, fill_value='').fillna('')
+    """Editor frame: text columns as strings, the two date columns as datetimes (calendar picker in the editor)."""
+    df = pd.DataFrame(rows).reindex(columns=columns)
+    for c in columns:
+        if c in DATE_COLUMNS:
+            parsed = []
+            for v in df[c]:
+                if isinstance(v, pd.Timestamp) or hasattr(v, 'year'):
+                    parsed.append(pd.Timestamp(v) if not pd.isna(v) else pd.NaT)
+                else:
+                    d, _ = trigger.parse_date(v)
+                    parsed.append(pd.Timestamp(d) if d else pd.NaT)
+            df[c] = pd.to_datetime(pd.Series(parsed, index=df.index))
+        else:
+            df[c] = df[c].map(_text)
     df.index = pd.RangeIndex(1, len(df) + 1, name='Index')
     return df
+
+
+def _missing_required(df: pd.DataFrame) -> list:
+    """Per row: 'missing: ...' naming the empty required columns (rows with no content at all are left blank)."""
+    out = []
+    for _, r in df.iterrows():
+        values = {c: _text(r.get(c)) for c in trigger.REQUIRED}
+        if not any(values.values()):
+            out.append('')
+            continue
+        missing = [trigger.LABELS[c].split(' (')[0] for c, v in values.items() if not v]
+        out.append('missing: ' + ', '.join(missing) if missing else '')
+    return out
+
+
+def _date_text(v) -> str:
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return ''
+    if hasattr(v, 'strftime'):
+        return pd.Timestamp(v).strftime(trigger.DATE_FORMAT)
+    return str(v).strip()
 
 
 def _remount(df: pd.DataFrame):
@@ -92,12 +129,8 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
     if om is not None:
         with st.expander(f'{om.label}: {om.n_filters_per_unit} filter(s) per unit, {len(om.filters)} distinct filters, {len(om.units)} units'):
             st.image(obsmode_png(om.mode, om.submode, tuple((u, tuple(f)) for u, f in om.filters_by_unit.items())), width='stretch')
-    c1, c2, c3 = st.columns(3)
     binning, gain = int(ts.default_binning), int(ts.default_gain)
-    c1.number_input('Binning', value=binning, disabled=True, key='tr_binning', help='Fixed.')
-    c2.number_input('Gain', value=gain, disabled=True, key='tr_gain', help=f'Fixed. To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
-    c3.number_input('Priority', value=int(ts.priority), disabled=True, key='tr_priority', help='Set by the observatory.')
-    c2.caption(f'To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
+    st.caption(f'Binning {binning}, gain {gain} and priority {ts.priority} are fixed by the observatory. To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     defaults = {'obsmode': obsmode, sub_field: submode, 'exptime': f'{ts.default_exptime:g}', 'count': str(ts.default_count),
                 'binning': str(binning), 'gain': str(gain), 'obs_startdate': '', 'obs_enddate': ''}
     return defaults, om
@@ -150,17 +183,29 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         columns_help()
     with left:
         base = ss['tr_rows']
-        col_cfg = {c: st.column_config.TextColumn(trigger.LABELS.get(c, c), help=trigger.FIELD_BY_NAME[c].help if c in trigger.FIELD_BY_NAME else None)
-                   for c in base.columns}
-        edited = st.data_editor(base, num_rows='dynamic', hide_index=False, width='stretch', column_config=col_cfg,
-                                key=f'tr_editor_{ss["tr_version"]}')
+        status = _missing_required(base)
+        view = base.copy()
+        view.insert(0, 'Check', status)
+        css = pd.DataFrame('', index=view.index, columns=view.columns)
+        css['Check'] = ['background-color: #ffb3b3; color: #7a0000; font-weight: 600' if v else 'background-color: #e8f5e9' for v in status]
+        col_cfg = {'Check': st.column_config.TextColumn('Check', help='Red: a required column (object name, RA, Dec) is empty.', width='medium')}
+        for c in base.columns:
+            f = trigger.FIELD_BY_NAME.get(c)
+            if c in DATE_COLUMNS:
+                col_cfg[c] = st.column_config.DatetimeColumn(trigger.LABELS.get(c, c), help=f.help if f else None, format='YYYY-MM-DDTHH:mm:ss', step=60)
+            else:
+                col_cfg[c] = st.column_config.TextColumn(trigger.LABELS.get(c, c), help=f.help if f else None, required=bool(f and f.required))
+        edited = st.data_editor(view.style.apply(lambda _: css, axis=None), num_rows='dynamic', hide_index=False, width='stretch',
+                                column_config=col_cfg, disabled=['Check'], key=f'tr_editor_{ss["tr_version"]}')
+        edited = edited.drop(columns=['Check'], errors='ignore')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
         b2.caption('RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. Use the last (empty) row to add a target; select rows and press Delete to remove them. '
                    f'Exposure time and frames: one value per order, comma-separated (e.g. 100,100); blank = {int(ts.default_exptime)} s and {ts.default_count} frames. '
                    'Dates: UTC, ' + trigger.DATE_EXAMPLE + ', optional.')
-    if len(edited) != len(base):
+    if len(edited) != len(base) or _missing_required(edited) != status:      # rows added/removed or a required cell filled/cleared: redraw the marks
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
+        st.rerun()
     if resolve:
         df, failed = edited.copy(), []
         for i, row in df.iterrows():
@@ -176,18 +221,27 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         st.rerun()
     for msg in ss.pop('tr_resolve_failures', []):
         st.error(msg)
+    for msg in ss.get('tr_import_notes', []):
+        st.error(msg)
     return edited
 
 
 def _import(df: pd.DataFrame, mapping: dict):
     data = trigger.apply_mapping(df, mapping)
+    bad = []
+    for c in DATE_COLUMNS:
+        if c in data.columns:
+            for i, v in enumerate(data[c], start=1):
+                if not trigger._blank(v) and trigger.parse_date(v)[1]:
+                    bad.append(f'row {i}: {trigger.LABELS[c]} "{v}" was not understood (use {trigger.DATE_EXAMPLE}); left empty')
+    st.session_state['tr_import_notes'] = bad
     extra = [f.name for f in trigger.FIELDS if f.name in data.columns and f.name not in EDITOR_BASE]
     _remount(_frame(data.to_dict('records'), EDITOR_BASE + extra))
 
 
 def validate(edited: pd.DataFrame, ts: trigger.TriggerSettings, defaults: dict, cfg: dict, project: str):
     """Rows of the editor -> (normalised rows, spreadsheet rows, issues). Fully empty rows are ignored."""
-    rows = [{c: _text(v) for c, v in r.items()} for r in edited.to_dict('records')]
+    rows = [{c: (_date_text(v) if c in DATE_COLUMNS else _text(v)) for c, v in r.items()} for r in edited.to_dict('records')]
     rows = [r for r in rows if any(r.get(c) for c in ('objname', 'RA', 'De'))]
     if not rows:
         return [], [], []
