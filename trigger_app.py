@@ -21,8 +21,7 @@ REQUEST_TYPES = ('Target', 'Survey')
 DATE_COLUMNS = ('obs_startdate', 'obs_enddate')
 EDITOR_COLUMNS = {'Target': ['objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate'],
                   'Survey': ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']}
-EXAMPLE_ROWS = {'Target': [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6', 'exptime': '100', 'count': '3'},
-                           {'objname': 'T01022', 'RA': '78.26087', 'De': '-71.32075', 'exptime': '100', 'count': '3'}],
+EXAMPLE_ROWS = {'Target': [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6', 'exptime': '100', 'count': '3'}],
                 'Survey': [{'objname': 'T01022', 'exptime': '100', 'count': '3'}, {'objname': 'T01023', 'exptime': '100', 'count': '3'}]}
 HELP = {
     'objname': 'Target name, up to 100 characters. Survey request: the 7DS tile ID, e.g. T01022 (the coordinates are the tile centre).',
@@ -240,8 +239,13 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
     columns = EDITOR_COLUMNS[rtype]
     if 'tr_rows' not in ss:
         _remount(_frame(EXAMPLE_ROWS[rtype], columns))
-    elif list(ss['tr_rows'].columns) != columns:                      # request type changed: keep what fits
-        _remount(_frame(_rows_as_text(ss['tr_rows']), columns))
+    elif list(ss['tr_rows'].columns) != columns:                      # request type changed
+        current = _rows_as_text(ss['tr_rows'])
+        other = [t for t in REQUEST_TYPES if t != rtype][0]
+        if [r['objname'] for r in current] == [r['objname'] for r in EXAMPLE_ROWS[other]]:
+            _remount(_frame(EXAMPLE_ROWS[rtype], columns))             # still the examples: show the examples of the new type
+        else:
+            _remount(_frame(current, columns))                         # user data: keep what fits
     left, right = st.columns([4, 1.4])
     with right:
         st.markdown('**Upload a file**')
@@ -270,7 +274,7 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
                 _import(ss['tr_upload_df'], mapping, rtype)
                 ss['tr_unknown'] = []
                 st.rerun()
-        st.download_button('Download a sample file', trigger.sample_file(), file_name='7dt_request_sample.csv', mime='text/csv', width='stretch', key='tr_sample')
+        st.download_button('Download a sample file', trigger.sample_file(rtype), file_name=f'7dt_request_sample_{rtype.lower()}.csv', mime='text/csv', width='stretch', key='tr_sample')
         columns_help(rtype)
     with left:
         base = ss['tr_rows']
@@ -368,14 +372,17 @@ def helper_section(norm: list, om, cfg: dict, hours: float | None):
                     fig_night, fig_month = visibility_plots_cached(site_key(site), cons_d, night, subset)
                 st.plotly_chart(fig_night, width='stretch', config={'displaylogo': False}, key='tr_vis_plot')
                 st.plotly_chart(fig_month, width='stretch', config={'displaylogo': False}, key='tr_month_plot')
-    with c_time, st.expander('Total time', expanded=True):
+    with c_time, st.expander('Total observation time', expanded=True):
         if om is None:
             st.caption('Choose an observation mode first.')
         else:
             tt = trigger.total_time(norm, om)
             st.metric('Targets with exposure and frames', tt['n_targets'])
             st.metric('Total exposure (per unit)', overhead.format_duration(tt['exposure_s']), help='exposure time x frames x filters per unit, summed over the targets')
-            st.metric('Total observation time', overhead.format_duration(tt['total_s']), help='with readout, filter changes, slewing, dispatch and the autofocus rule of the mode')
+            st.metric('Total observation time', overhead.format_duration(tt['total_s']), help='exposure plus every overhead below')
+            if tt['lines']:
+                st.markdown('**Overhead details** (' + overhead.format_duration(tt['overhead_s']) + ' in total)')
+                st.markdown('\n'.join(f'- {line}' for line in tt['lines']))
             if hours is not None:
                 st.metric('Allocated to the project', f'{hours:g} h', delta=f'{(hours * 3600 - tt["total_s"]) / 3600:+.1f} h left', delta_color='normal')
                 if tt['total_s'] > hours * 3600:

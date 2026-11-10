@@ -362,11 +362,14 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
     return out
 
 
-def sample_file() -> bytes:
+def sample_file(kind: str = 'Target') -> bytes:
+    if kind == 'Survey':
+        return (b'objname,exptime,count,obs_startdate,obs_enddate\n'
+                b'T01022,100,3,,\n'
+                b'T01023,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
     return (b'objname,RA,De,exptime,count,obs_startdate,obs_enddate\n'
             b'NGC0253,00:47:33.12,-25:17:17.6,100,3,,\n'
-            b'T01022,78.26087,-71.32075,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n'
-            b'M31,10.68471,+41.26875,100,3,,\n')
+            b'M31,10.68471,+41.26875,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
 
 
 # ------------------------------------------------------------------ projects (keys and allocations)
@@ -407,9 +410,10 @@ def total_time(rows: list, obsmode, config=None) -> dict:
     good = [r for r in rows if r.get('exptime_s') is not None and r.get('count_n') is not None]
     n_per_unit = max(obsmode.n_filters_per_unit, 1) if obsmode is not None else 1
     exposure = sum(float(r['exptime_s']) * int(r['count_n']) * n_per_unit for r in good)
-    total = exposure
+    total, lines, overhead_s = exposure, [], 0.0
     if obsmode is not None and good:
         cfg = config or oh.OverheadConfig.load()
         reqs = [oh.ObsRequest(r['objname'] or f'row {i}', float(r['exptime_s']), int(r['count_n']), obsmode, 'per_filter', config=cfg) for i, r in enumerate(good, start=1)]
-        total = oh.estimate(reqs, cfg).total
-    return {'n_targets': len(good), 'exposure_s': exposure, 'total_s': total}
+        result = oh.estimate(reqs, cfg)
+        total, overhead_s, lines = result.total, result.overhead, result.summary_lines()
+    return {'n_targets': len(good), 'exposure_s': exposure, 'overhead_s': overhead_s, 'total_s': total, 'lines': lines}

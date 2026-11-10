@@ -21,7 +21,9 @@ def test_read_table_formats():
     m2, u2 = trigger.recognise_columns(['objname', 'ra', 'dec', 'obsmode', 'specmode', 'filter', 'gain'])
     assert set(m2.values()) == {'objname', 'RA', 'De'} and u2 == ['obsmode', 'specmode', 'filter', 'gain']   # mode and fixed values never come from a file
     sample = trigger.read_table(trigger.sample_file(), 'sample.csv')
-    assert list(sample.columns) == list(trigger.FILE_COLUMNS)
+    assert list(sample.columns) == list(trigger.FILE_COLUMNS) and list(sample['objname']) == ['NGC0253', 'M31']
+    survey = trigger.read_table(trigger.sample_file('Survey'), 'survey.csv')
+    assert list(survey.columns) == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate'] and list(survey['objname']) == ['T01022', 'T01023']
     applied = trigger.apply_mapping(tsv, {**mapping, 'mystery': 'count'})
     assert list(applied.columns) == ['objname', 'RA', 'De', 'count'] and applied.iloc[0]['count'] == 'x'
 
@@ -76,7 +78,7 @@ def test_trigger_page_renders():
     at.run()
     assert not at.exception, at.exception
     assert at.title[0].value == '7DT Observation request'
-    assert any('2 target(s) ready' in s.value for s in at.success)
+    assert any('1 target(s) ready' in s.value for s in at.success)
     at.text_input(key='tr_project').set_value('Test Project').run()
     assert not at.exception, at.exception
     assert any('2610_2708_Test_Project' in m.value for m in at.markdown)
@@ -89,8 +91,9 @@ def test_trigger_page_renders():
     at.radio(key='tr_type').set_value('Survey').run()                   # survey: tile IDs, coordinates from the tiles
     assert not at.exception, at.exception
     assert at.session_state['tr_rows'].columns.tolist() == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']
-    assert any('must be a 7DS tile ID' in e.value for e in at.error)      # NGC0253 is not a tile; T01022 is
-    assert not any('target(s) ready' in s.value for s in at.success)
+    assert list(at.session_state['tr_rows']['objname']) == ['T01022', 'T01023']   # the survey examples replace the target examples
+    assert any('2 target(s) ready' in s.value for s in at.success)
+    assert any('Overhead details' in m.value for m in at.markdown)
 
 
 def test_survey_rows_and_projects(tmp_path):
@@ -102,7 +105,7 @@ def test_survey_rows_and_projects(tmp_path):
     assert [i.field for i in issues] == ['objname'] and issues[0].row == 2
     om = trigger.request_obsmode('Spec', 'specall', cfg)
     tt = trigger.total_time(norm[:1], om)
-    assert tt['n_targets'] == 1 and tt['exposure_s'] == 600 and tt['total_s'] > 600
+    assert tt['n_targets'] == 1 and tt['exposure_s'] == 600 and tt['total_s'] > 600 and tt['lines'] and tt['overhead_s'] > 0
     f = tmp_path / 'projects.json'
     f.write_text('{"_description": "x", "GRB followup": {"key": "abc", "allocated_hours": 30}}')
     projects = trigger.load_projects(f)
