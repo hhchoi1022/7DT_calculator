@@ -142,7 +142,7 @@ def columns_help():
                 for f in trigger.FIELDS if f.name in trigger.FILE_COLUMNS]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
         st.caption('Column names are matched ignoring case, spaces and underscores; common aliases (name, ra, dec, exposure, frames, ...) are recognised. '
-                   'Unrecognised columns can be assigned after the upload. The observation mode comes from the settings above.')
+                   'Unrecognised columns can be assigned after the upload or ignored. The observation mode is set on the page, not in the file.')
 
 
 def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
@@ -167,7 +167,7 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
                 st.error(f'Could not read the file: {exc}')
         if ss.get('tr_unknown'):
             st.markdown('Assign the unrecognised columns:')
-            labels = {trigger.IGNORE: trigger.IGNORE, **{f.name: f'{f.label} [{f.name}]' for f in trigger.FIELDS}}
+            labels = {trigger.IGNORE: trigger.IGNORE, **{f.name: f'{f.label} [{f.name}]' for f in trigger.FIELDS if f.name in trigger.FILE_COLUMNS}}
             choice = {}
             for c in ss['tr_unknown']:
                 choice[c] = st.selectbox(f'column "{c}"', list(labels), format_func=lambda k: labels[k], key=f'tr_map_{c}')
@@ -235,8 +235,7 @@ def _import(df: pd.DataFrame, mapping: dict):
                 if not trigger._blank(v) and trigger.parse_date(v)[1]:
                     bad.append(f'row {i}: {trigger.LABELS[c]} "{v}" was not understood (use {trigger.DATE_EXAMPLE}); left empty')
     st.session_state['tr_import_notes'] = bad
-    extra = [f.name for f in trigger.FIELDS if f.name in data.columns and f.name not in EDITOR_BASE]
-    _remount(_frame(data.to_dict('records'), EDITOR_BASE + extra))
+    _remount(_frame(data.to_dict('records'), EDITOR_BASE))          # only the file columns; the mode comes from the settings
 
 
 def validate(edited: pd.DataFrame, ts: trigger.TriggerSettings, defaults: dict, cfg: dict, project: str):

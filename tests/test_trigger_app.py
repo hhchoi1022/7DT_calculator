@@ -18,6 +18,10 @@ def test_read_table_formats():
     tsv = trigger.read_table('target\tra\tdec\tmystery\nC\t1\t2\tx\n', 'c.tsv')
     mapping, unknown = trigger.recognise_columns(tsv.columns)
     assert mapping == {'target': 'objname', 'ra': 'RA', 'dec': 'De'} and unknown == ['mystery']
+    mapping, unknown = trigger.recognise_columns(['objname', 'ra', 'dec', 'obsmode', 'specmode', 'filter', 'gain'])
+    assert set(mapping.values()) == {'objname', 'RA', 'De'} and unknown == ['obsmode', 'specmode', 'filter', 'gain']   # mode and fixed values never come from a file
+    sample = trigger.read_table(trigger.sample_file(), 'sample.csv')
+    assert list(sample.columns) == list(trigger.FILE_COLUMNS)
     applied = trigger.apply_mapping(tsv, {**mapping, 'mystery': 'count'})
     assert list(applied.columns) == ['objname', 'RA', 'De', 'count'] and applied.iloc[0]['count'] == 'x'
 

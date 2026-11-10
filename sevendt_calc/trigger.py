@@ -50,7 +50,7 @@ FIELDS = (
 FIELD_BY_NAME = {f.name: f for f in FIELDS}
 REQUIRED = tuple(f.name for f in FIELDS if f.required)
 SHORT_LABELS = {'objname': 'Object name', 'RA': 'RA', 'De': 'Dec', 'exptime': 'Exposure time', 'count': 'Frames'}
-FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate')   # shown in the columns help
+FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate')   # the columns a request file / the table may carry
 HIDDEN_COLUMNS = ('note', 'comment', 'weight', 'is_ToO', 'is_rapidToO', 'objtype')
 SHEET_COLUMNS = tuple(f.name for f in FIELDS) + HIDDEN_COLUMNS
 LABELS = {f.name: f.label for f in FIELDS}
@@ -63,8 +63,9 @@ def _norm(text) -> str:
 
 ALIAS_MAP = {}
 for _f in FIELDS:
-    for _a in (_f.name,) + _f.aliases:
-        ALIAS_MAP.setdefault(_norm(_a), _f.name)
+    if _f.name in FILE_COLUMNS:                       # the observation mode and the fixed values come from the page, never from a file
+        for _a in (_f.name,) + _f.aliases:
+            ALIAS_MAP.setdefault(_norm(_a), _f.name)
 
 
 @dataclass
@@ -349,7 +350,7 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
 
 
 def sample_file() -> bytes:
-    return (b'objname,RA,De,obsmode,specmode,filter_,exptime,count,obs_startdate,obs_enddate\n'
-            b'NGC0253,00:47:33.12,-25:17:17.6,Spec,specall,,100,3,,\n'
-            b'T01022,78.26087,-71.32075,Spec,specall,,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n'
-            b'M31,10.68471,+41.26875,Deep,,r,100,3,,\n')
+    return (b'objname,RA,De,exptime,count,obs_startdate,obs_enddate\n'
+            b'NGC0253,00:47:33.12,-25:17:17.6,100,3,,\n'
+            b'T01022,78.26087,-71.32075,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n'
+            b'M31,10.68471,+41.26875,100,3,,\n')
