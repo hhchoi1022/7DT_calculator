@@ -29,8 +29,8 @@ HELP = {
     'De': 'Declination: ±dd:mm:ss (e.g. -25:17:17.6) or degrees (e.g. -25.288).',
     'exptime': 'Exposure time per frame in seconds, one number; standard 100, 180 at most. Applied to every filter of the mode.',
     'count': 'Number of frames per filter, a whole number; standard 3.',
-    'obs_startdate': 'Optional. Earliest UTC date of the observation: pick a day in the calendar (stored as 00:00:00).',
-    'obs_enddate': 'Optional. Latest UTC date of the observation: pick a day in the calendar (stored as 00:00:00).',
+    'obs_startdate': 'Optional. Earliest UTC date of the observation, typed as YYYY-MM-DD (e.g. 2026-11-11) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
+    'obs_enddate': 'Optional. Latest UTC date of the observation, typed as YYYY-MM-DD (e.g. 2026-12-01) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
 }
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 PLOT_LIMIT = 10                      # targets drawn in the visibility plots by default (the table covers all of them)
@@ -42,29 +42,28 @@ def _text(v) -> str:
 
 
 def _date_text(v) -> str:
-    """A calendar date from the editor -> the spreadsheet format with the time 00:00:00."""
+    """A date cell as typed (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS); a date-only value gets the time 00:00:00. Unreadable text is kept for the validation to flag."""
     if v is None or (not isinstance(v, str) and pd.isna(v)):
         return ''
     if hasattr(v, 'strftime'):
-        return pd.Timestamp(v).strftime('%Y-%m-%dT00:00:00')
-    return str(v).strip()
+        return pd.Timestamp(v).strftime(trigger.DATE_FORMAT)
+    text = str(v).strip()
+    if not text or text.lower() == 'none':
+        return ''
+    d, err = trigger.parse_date(text)
+    return d.strftime(trigger.DATE_FORMAT) if d and not err else text
 
 
 def _frame(rows, columns) -> pd.DataFrame:
-    """Editor frame: text columns as strings, the two date columns as calendar dates."""
+    """Editor frame: every column as text; dates are shown as YYYY-MM-DD (plus the time when one was given)."""
     df = pd.DataFrame(rows).reindex(columns=columns)
     for c in columns:
         if c in DATE_COLUMNS:
-            parsed = []
+            shown = []
             for v in df[c]:
-                if v is None or (not isinstance(v, str) and pd.isna(v)):
-                    parsed.append(None)
-                elif hasattr(v, 'year'):
-                    parsed.append(pd.Timestamp(v).date())
-                else:
-                    d, _ = trigger.parse_date(v)
-                    parsed.append(d.date() if d else None)
-            df[c] = pd.Series(parsed, index=df.index, dtype=object)
+                t = _date_text(v)
+                shown.append(t[:-9] if t.endswith('T00:00:00') else t)
+            df[c] = pd.Series(shown, index=df.index, dtype=object)
         else:
             df[c] = df[c].map(_text)
     df.index = pd.RangeIndex(1, len(df) + 1, name='Index')
@@ -179,14 +178,7 @@ def columns_help(rtype: str):
 
 def _import(df: pd.DataFrame, mapping: dict, rtype: str):
     data = trigger.apply_mapping(df, mapping)
-    bad = []
-    for c in DATE_COLUMNS:
-        if c in data.columns:
-            for i, v in enumerate(data[c], start=1):
-                if not trigger._blank(v) and trigger.parse_date(v)[1]:
-                    bad.append(f'row {i}: {trigger.LABELS[c]} "{v}" was not understood (use {trigger.DATE_EXAMPLE}); left empty')
-    st.session_state['tr_import_notes'] = bad
-    _remount(_frame(data.to_dict('records'), EDITOR_COLUMNS[rtype]))
+    _remount(_frame(data.to_dict('records'), EDITOR_COLUMNS[rtype]))       # unreadable dates stay as typed and are flagged by the validation
 
 
 @st.dialog('7DS Tile matcher', width='large')
@@ -280,12 +272,10 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
         base = ss['tr_rows']
         col_cfg = {}
         for c in base.columns:
-            if c in DATE_COLUMNS:
-                col_cfg[c] = st.column_config.DateColumn(trigger.LABELS[c], help=HELP[c], format='YYYY-MM-DD')
-            else:
-                # Only the object name is marked required in the editor: the editor withholds a new row until its required
-                # cells are filled, so marking the other columns would make such rows vanish when the table is redrawn.
-                col_cfg[c] = st.column_config.TextColumn(trigger.LABELS[c], help=HELP[c], required=(c == 'objname'))
+            # Only the object name is marked required in the editor: the editor withholds a new row until its required
+            # cells are filled, so marking the other columns would make such rows vanish when the table is redrawn.
+            # Dates are plain text (YYYY-MM-DD): the calendar editor did not accept typed dates.
+            col_cfg[c] = st.column_config.TextColumn(trigger.LABELS[c], help=HELP[c], required=(c == 'objname'))
         edited = st.data_editor(base, num_rows='dynamic', hide_index=False, width='stretch', column_config=col_cfg, key=f'tr_editor_{ss["tr_version"]}')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         if rtype == 'Target':
@@ -315,8 +305,6 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
         _remount(_frame(df.to_dict('records'), list(base.columns)))
         st.rerun()
     for msg in ss.pop('tr_resolve_failures', []):
-        st.error(msg)
-    for msg in ss.get('tr_import_notes', []):
         st.error(msg)
     return edited
 
