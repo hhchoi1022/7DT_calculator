@@ -34,12 +34,14 @@ def _frame(rows, columns) -> pd.DataFrame:
         if c in DATE_COLUMNS:
             parsed = []
             for v in df[c]:
-                if isinstance(v, pd.Timestamp) or hasattr(v, 'year'):
-                    parsed.append(pd.Timestamp(v) if not pd.isna(v) else pd.NaT)
+                if v is None or (not isinstance(v, str) and pd.isna(v)):
+                    parsed.append(None)
+                elif hasattr(v, 'year'):
+                    parsed.append(pd.Timestamp(v).date())
                 else:
                     d, _ = trigger.parse_date(v)
-                    parsed.append(pd.Timestamp(d) if d else pd.NaT)
-            df[c] = pd.to_datetime(pd.Series(parsed, index=df.index))
+                    parsed.append(d.date() if d else None)
+            df[c] = pd.Series(parsed, index=df.index, dtype=object)
         else:
             df[c] = df[c].map(_text)
     df.index = pd.RangeIndex(1, len(df) + 1, name='Index')
@@ -47,10 +49,11 @@ def _frame(rows, columns) -> pd.DataFrame:
 
 
 def _date_text(v) -> str:
+    """A calendar date from the editor -> the spreadsheet format with the time 00:00:00."""
     if v is None or (not isinstance(v, str) and pd.isna(v)):
         return ''
     if hasattr(v, 'strftime'):
-        return pd.Timestamp(v).strftime(trigger.DATE_FORMAT)
+        return pd.Timestamp(v).strftime('%Y-%m-%dT00:00:00')
     return str(v).strip()
 
 
@@ -174,7 +177,7 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         for c in base.columns:
             f = trigger.FIELD_BY_NAME.get(c)
             if c in DATE_COLUMNS:
-                col_cfg[c] = st.column_config.DatetimeColumn(trigger.LABELS.get(c, c), help=f.help if f else None, format='YYYY-MM-DDTHH:mm:ss', step=60)
+                col_cfg[c] = st.column_config.DateColumn(trigger.LABELS.get(c, c), help='Pick a day in the calendar (UTC, 00:00:00).', format='YYYY-MM-DD')
             else:
                 # Only the object name is marked as required in the editor ("Please fill out this cell"): the editor
                 # withholds a new row until its required cells are filled, so marking RA/Dec, exposure time or frames
@@ -186,7 +189,7 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
         b2.caption('Object name, RA/Dec, exposure time and frames are required. RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. '
                    f'Exposure time and frames: one number each, applied to every filter of the mode (standard {int(ts.default_exptime)} s and {ts.default_count} frames). '
-                   'Dates are optional (UTC). Use the last (empty) row to add a target; select rows and press Delete to remove them.')
+                   'Dates are optional: pick a day in the calendar (UTC, stored as 00:00:00). Use the last (empty) row to add a target; select rows and press Delete to remove them.')
     if len(edited) != len(base):                      # rows added or removed: renumber and re-mount
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
         st.rerun()
@@ -386,9 +389,10 @@ def tools_section(norm: list, om, cfg: dict):
             st.caption('Needs targets with valid coordinates.')
         else:
             df, figs = tiles_cached(targets)
-            st.dataframe(styled_rows(df[['target', 'status', 'primary_tile', 'distance_to_edge_arcmin', 'warnings']].round(2), 'status'), hide_index=True, width='stretch')
-            for i, fig in enumerate(figs):
-                st.plotly_chart(fig, width='stretch', config={'displaylogo': False}, key=f'tr_tile_plot_{i}')
+            st.dataframe(styled_rows(df[['target', 'status', 'primary_tile', 'warnings']], 'status'), hide_index=True, width='stretch')
+            for i, (fig, name) in enumerate(zip(figs, df['target'])):
+                if st.toggle(f'Map: {name}', key=f'tr_tile_map_{i}'):
+                    st.plotly_chart(fig, width='stretch', config={'displaylogo': False}, key=f'tr_tile_plot_{i}')
 
 
 def main():
