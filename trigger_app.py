@@ -13,7 +13,7 @@ from sevendt_calc import config, etc, overhead, sheets, tiles, trigger
 from sevendt_calc import templates as tpl
 from sevendt_calc import visibility as vis
 from sevendt_calc.targets import Target, resolve_name
-from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, site_key, styled_rows
+from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, figure_png, live_config, night_date_input, night_midpoint_utc, obsmode_png, site_key, styled_rows
 
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
@@ -92,37 +92,15 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
     if om is not None:
         with st.expander(f'{om.label}: {om.n_filters_per_unit} filter(s) per unit, {len(om.filters)} distinct filters, {len(om.units)} units'):
             st.image(obsmode_png(om.mode, om.submode, tuple((u, tuple(f)) for u, f in om.filters_by_unit.items())), width='stretch')
-    n = max(om.n_filters_per_unit, 1) if om is not None else 1
-
-    st.markdown('**Exposure time and frames per order** (defaults for every target; a target may have its own values in the table below). '
-                'An order is one filter position of the sequence; the values are stored comma-separated.')
-    cols = st.columns(max(n, 1) * 2)
-    exptimes, counts = [], []
-    for k in range(n):
-        label = f'order {k + 1}' if n > 1 else ''
-        exptimes.append(cols[2 * k].number_input(f'Exposure time [s] {label}'.strip(), 1.0, 10000.0, float(ts.default_exptime), 10.0, key=f'tr_exp_{k}'))
-        counts.append(int(cols[2 * k + 1].number_input(f'Frames {label}'.strip(), 1, 999, int(ts.default_count), key=f'tr_cnt_{k}')))
-    if any(e > ts.max_exptime for e in exptimes):
-        st.error(f'Exposure times above {ts.max_exptime:g} s are not accepted.')
-    elif any(e != ts.default_exptime for e in exptimes):
-        st.warning(f'The standard exposure time is {ts.default_exptime:g} s (the depth model was fitted on {ts.default_exptime:g} s frames); other values are accepted with this warning.')
-
     c1, c2, c3 = st.columns(3)
-    binning = int(c1.number_input('Binning', 1, 8, int(ts.default_binning), key='tr_binning'))
-    gain = int(ts.default_gain)
+    binning, gain = int(ts.default_binning), int(ts.default_gain)
+    c1.number_input('Binning', value=binning, disabled=True, key='tr_binning', help='Fixed.')
     c2.number_input('Gain', value=gain, disabled=True, key='tr_gain', help=f'Fixed. To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     c3.number_input('Priority', value=int(ts.priority), disabled=True, key='tr_priority', help='Set by the observatory.')
     c2.caption(f'To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
-    if ts.gain_table:
-        with st.expander('Gain settings of the camera'):
-            st.dataframe(pd.DataFrame(ts.gain_table).rename(columns={'gain': 'Gain number', 'gain_db': 'Gain in dB', 'multiply': 'Gain multiply', 'conversion': 'Conversion factor',
-                                                                     'read_noise': 'Read noise RMS', 'full_well': 'Full well capacity'}), hide_index=True, width='stretch')
-    d1, d2 = st.columns(2)
-    start = d1.text_input('Observation start (UTC), optional', key='tr_start', placeholder=trigger.DATE_EXAMPLE, help='Applied to targets without their own start date.')
-    end = d2.text_input('Observation end (UTC), optional', key='tr_end', placeholder='2026-12-01T00:00:00', help='Applied to targets without their own end date.')
-    defaults = {'obsmode': obsmode, sub_field: submode, 'exptime': ','.join(f'{e:g}' for e in exptimes), 'count': ','.join(str(c) for c in counts),
-                'binning': str(binning), 'gain': str(gain), 'obs_startdate': start, 'obs_enddate': end}
-    return defaults, om, exptimes, counts
+    defaults = {'obsmode': obsmode, sub_field: submode, 'exptime': f'{ts.default_exptime:g}', 'count': str(ts.default_count),
+                'binning': str(binning), 'gain': str(gain), 'obs_startdate': '', 'obs_enddate': ''}
+    return defaults, om
 
 
 def columns_help():
@@ -134,7 +112,7 @@ def columns_help():
                    'Unrecognised columns can be assigned after the upload. Exposure time and frames may hold one value per order, comma-separated.')
 
 
-def targets_section() -> pd.DataFrame:
+def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
     st.header('Input target(s)')
     ss = st.session_state
     if 'tr_rows' not in ss:
@@ -179,8 +157,8 @@ def targets_section() -> pd.DataFrame:
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
         b2.caption('RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. Use the last (empty) row to add a target; select rows and press Delete to remove them. '
-                   'Exposure time and frames: one value per order, comma-separated (e.g. 100,100). Dates: UTC, ' + trigger.DATE_EXAMPLE + '. '
-                   'Blank cells take the observation settings above.')
+                   f'Exposure time and frames: one value per order, comma-separated (e.g. 100,100); blank = {int(ts.default_exptime)} s and {ts.default_count} frames. '
+                   'Dates: UTC, ' + trigger.DATE_EXAMPLE + ', optional.')
     if len(edited) != len(base):
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
     if resolve:
@@ -207,15 +185,21 @@ def _import(df: pd.DataFrame, mapping: dict):
     _remount(_frame(data.to_dict('records'), EDITOR_BASE + extra))
 
 
-def preview_section(edited: pd.DataFrame, ts: trigger.TriggerSettings, defaults: dict, cfg: dict, project: str):
-    st.header('Request preview')
+def validate(edited: pd.DataFrame, ts: trigger.TriggerSettings, defaults: dict, cfg: dict, project: str):
+    """Rows of the editor -> (normalised rows, spreadsheet rows, issues). Fully empty rows are ignored."""
     rows = [{c: _text(v) for c, v in r.items()} for r in edited.to_dict('records')]
-    rows = [r for r in rows if any(r.get(c) for c in ('objname', 'RA', 'De'))]          # ignore fully empty rows
+    rows = [r for r in rows if any(r.get(c) for c in ('objname', 'RA', 'De'))]
     if not rows:
-        st.info('Add at least one target.')
         return [], [], []
     norm, issues = trigger.validate_rows(rows, ts, defaults, cfg)
-    formatted = trigger.format_rows(norm, project, ts)
+    return norm, trigger.format_rows(norm, project, ts), issues
+
+
+def preview_section(formatted: list, issues: list):
+    st.header('Request preview')
+    if not formatted:
+        st.info('Add at least one target.')
+        return
     df = pd.DataFrame(formatted, columns=list(trigger.SHEET_COLUMNS))
     df.index = pd.RangeIndex(1, len(df) + 1, name='Row')
     css = pd.DataFrame('', index=df.index, columns=df.columns)
@@ -231,7 +215,6 @@ def preview_section(edited: pd.DataFrame, ts: trigger.TriggerSettings, defaults:
         st.warning(str(it))
     if not errors:
         st.success(f'{len(formatted)} target(s) ready.' + (f' {len(warnings)} warning(s).' if warnings else ''))
-    return norm, formatted, errors
 
 
 def submit_section(formatted: list, errors: list, ts: trigger.TriggerSettings, project: str):
@@ -267,34 +250,58 @@ def visibility_cached(key: tuple, cons: dict, night, targets: tuple):
     return pd.DataFrame([vis.night_summary(r) for r in results]), vis.plot_visibility_interactive(results, site, mark_time=False)
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def month_grid_cached(key: tuple, cons: dict, start_night):
+    return vis.month_grid(start_night, config.Site(*key), vis.Constraints(**cons))
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def monthly_cached(key: tuple, cons: dict, start_night, targets: tuple):
+    site = config.Site(*key)
+    tg = [Target(name=n, ra=ra, dec=dec) for n, ra, dec in targets]
+    m = vis.monthly_visibility(tg, start_night, site, vis.Constraints(**cons), grid=month_grid_cached(key, cons, start_night))
+    return vis.plot_monthly_interactive(m, site, show_max_alt=False)
+
+
 @st.cache_data(show_spinner=False, max_entries=32)
 def depth_cached(mag: float, band: str, spectrum: str, mode: str, submode: str, table: tuple, exptime: float, count: int, seeing: float):
     om = config.ObsMode(mode=mode, submode=submode, filters_by_unit={u: list(f) for u, f in table})
     target = Target(name='target', mag=float(mag), mag_filter=band, spectrum_type=spectrum)
     cond = etc.conditions_for(seeing=seeing, moon_phase=0.5, moon_separation=90.0, hour_since_sunset=5.0)
-    return pd.DataFrame([r.row() for r in get_calculator().snr(target, om.filters, exptime, count, cond, units=om.filter_multiplicity())])
+    results = get_calculator().snr(target, om.filters, exptime, count, cond, units=om.filter_multiplicity())
+    df = pd.DataFrame([r.row() for r in results])
+    return df, etc.plot_snr_vs_exptime_interactive(target, results, cond), etc.plot_spectrum_points_interactive(target, results, noise_seed=1, title='Expected 7DT photometry')
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def overhead_cached(mode: str, submode: str, table: tuple, exptime: float, count: int):
+    import matplotlib.pyplot as plt
     om = config.ObsMode(mode=mode, submode=submode, filters_by_unit={u: list(f) for u, f in table})
     cfg_oh = overhead.OverheadConfig.load()
     req = overhead.ObsRequest('request', exptime, count, om, 'per_filter', config=cfg_oh)
     result = overhead.estimate([req], cfg_oh)
-    return {'total': result.total, 'science': result.science_time, 'overhead': result.overhead, 'efficiency': result.efficiency}, result.summary_lines(), req.autofocus_policy
+    fig = overhead.plot_timeline(result)
+    png = figure_png(fig, dpi=150)
+    plt.close(fig)
+    return {'total': result.total, 'science': result.science_time, 'overhead': result.overhead, 'efficiency': result.efficiency}, result.summary_lines(), req.autofocus_policy, png
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def tiles_cached(targets: tuple):
     ts_ = get_tiles()
-    return pd.DataFrame([ts_.match(ra, dec, radius_deg=0.0, target=Target(name=n, ra=ra, dec=dec)).summary() for n, ra, dec in targets])
+    matches = [ts_.match(ra, dec, radius_deg=0.0, target=Target(name=n, ra=ra, dec=dec)) for n, ra, dec in targets]
+    return pd.DataFrame([m.summary() for m in matches]), [tiles.plot_tile_match_interactive(m) for m in matches]
 
 
-def tools_section(norm: list, om, exptimes: list, counts: list, cfg: dict):
-    """Visibility, depth, overhead and tile checks: four collapsible panels side by side, computed as the inputs change."""
+def tools_section(norm: list, om, cfg: dict):
+    """Visibility, depth, overhead and tile checks with their figures: four collapsible panels side by side, computed as the inputs change."""
     st.header('Checks')
     targets = tuple((r['objname'] or f'row {i}', float(r['RA_deg']), float(r['De_deg'])) for i, r in enumerate(norm, start=1) if r.get('RA_deg') is not None)
+    first = next((r for r in norm if r.get('exptime_list') and r.get('count_list')), None)
+    exptime = float(first['exptime_list'][0]) if first else 100.0
+    count = int(first['count_list'][0]) if first else 3
     site, cons = cfg['site'], cfg['constraints']
+    cons_d = {'min_alt': cons.min_alt, 'max_alt': cons.max_alt, 'moon_sep': cons.moon_sep, 'sun_alt': cons.sun_alt}
     table = tuple((u, tuple(f)) for u, f in om.filters_by_unit.items()) if om is not None else ()
     c_vis, c_depth, c_oh, c_tile = st.columns(4)
 
@@ -304,9 +311,11 @@ def tools_section(norm: list, om, exptimes: list, counts: list, cfg: dict):
             st.caption('Needs targets with valid coordinates.')
         else:
             with st.spinner('Computing...'):
-                df, fig = visibility_cached(site_key(site), {'min_alt': cons.min_alt, 'max_alt': cons.max_alt, 'moon_sep': cons.moon_sep, 'sun_alt': cons.sun_alt}, night, targets)
+                df, fig = visibility_cached(site_key(site), cons_d, night, targets)
             st.dataframe(styled_rows(df[['target', 'status', 'observable_hours', 'windows', 'note']], 'status'), hide_index=True, width='stretch')
             st.plotly_chart(fig, width='stretch', config={'displaylogo': False}, key='tr_vis_plot')
+            with st.spinner('Computing the month...'):
+                st.plotly_chart(monthly_cached(site_key(site), cons_d, night, targets), width='stretch', config={'displaylogo': False}, key='tr_month_plot')
 
     with c_depth, st.expander('Depth (SNR)'):
         if om is None:
@@ -317,27 +326,32 @@ def tools_section(norm: list, om, exptimes: list, counts: list, cfg: dict):
             keys = [k for k in tpl.template_keys() if k not in (tpl.UPLOAD_KEY, tpl.FLAT_KEY)]
             spectrum = st.selectbox('Spectrum', keys, index=keys.index('Star: G2V') if 'Star: G2V' in keys else 0, key='tr_spec')
             with st.spinner('Computing...'):
-                df = depth_cached(float(mag), band, spectrum, om.mode, om.submode, table, float(exptimes[0]), int(counts[0]), typical_seeing())
-            st.caption(f'50 % Moon at 90°, 5 h after sunset, typical seeing; {exptimes[0]:g} s x {counts[0]} frames per filter (default settings, first order).')
-            st.dataframe(df[['filter', 'mag_AB', 'UL5_stacked', 'SNR_stacked']].round(2) if 'UL5_stacked' in df.columns else df.round(2), hide_index=True, width='stretch')
+                df, fig_snr, fig_phot = depth_cached(float(mag), band, spectrum, om.mode, om.submode, table, exptime, count, typical_seeing())
+            st.caption(f'50 % Moon at 90°, 5 h after sunset, typical seeing; {exptime:g} s x {count} frames per filter (first target, first order).')
+            st.dataframe(df[['filter', 'mag_AB', 'UL5_stacked', 'SNR_stacked']].round(2), hide_index=True, width='stretch')
+            st.plotly_chart(fig_snr, width='stretch', config={'displaylogo': False}, key='tr_snr_plot')
+            st.plotly_chart(fig_phot, width='stretch', config={'displaylogo': False}, key='tr_phot_plot')
 
     with c_oh, st.expander('Overhead'):
         if om is None:
             st.caption('Choose an observation mode with filters first.')
         else:
-            metrics, lines, policy = overhead_cached(om.mode, om.submode, table, float(exptimes[0]), int(counts[0]))
+            metrics, lines, policy, png = overhead_cached(om.mode, om.submode, table, exptime, count)
             st.metric('Total observation time', overhead.format_duration(metrics['total']))
             st.metric('Open-shutter time', overhead.format_duration(metrics['science']))
             st.metric('Overhead', overhead.format_duration(metrics['overhead']), help=f'efficiency {100 * metrics["efficiency"]:.0f} %')
             st.markdown('\n'.join(f'- {line}' for line in lines))
-            st.caption('Per target, default settings, first order; autofocus ' + ('once per filter.' if policy == 'per_filter' else 'none.'))
+            st.image(png, width='stretch')
+            st.caption('Per target, first target\'s exposure and frames, first order; autofocus ' + ('once per filter.' if policy == 'per_filter' else 'none.'))
 
     with c_tile, st.expander('7DS tiles'):
         if not targets:
             st.caption('Needs targets with valid coordinates.')
         else:
-            df = tiles_cached(targets)
+            df, figs = tiles_cached(targets)
             st.dataframe(styled_rows(df[['target', 'status', 'primary_tile', 'distance_to_edge_arcmin', 'warnings']].round(2), 'status'), hide_index=True, width='stretch')
+            for i, fig in enumerate(figs):
+                st.plotly_chart(fig, width='stretch', config={'displaylogo': False}, key=f'tr_tile_plot_{i}')
 
 
 def main():
@@ -346,11 +360,12 @@ def main():
     cfg = live_config()
     ts = trigger.TriggerSettings.load()
     project = project_section(ts)
-    defaults, om, exptimes, counts = settings_section(ts, cfg)
-    edited = targets_section()
-    norm, formatted, errors = preview_section(edited, ts, defaults, cfg, project)
-    submit_section(formatted, errors, ts, project)
-    tools_section(norm, om, exptimes, counts, cfg)
+    defaults, om = settings_section(ts, cfg)
+    edited = targets_section(ts)
+    norm, formatted, issues = validate(edited, ts, defaults, cfg, project)
+    tools_section(norm, om, cfg)
+    preview_section(formatted, issues)
+    submit_section(formatted, [i for i in issues if i.level == 'error'], ts, project)
 
 
 if __name__ == '__main__':

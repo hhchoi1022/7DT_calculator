@@ -74,5 +74,6 @@ def test_trigger_page_renders():
     at.selectbox(key='tr_obsmode').set_value('Deep').run()
     assert not at.exception, at.exception
     assert at.selectbox(key='tr_deepmode').value == 'g'
-    at.number_input(key='tr_exp_0').set_value(200.0).run()
-    assert any('not accepted' in e.value for e in at.error)
+    assert at.number_input(key='tr_binning').disabled and at.number_input(key='tr_gain').disabled
+    assert at.number_input(key='tr_binning').value == 1 and at.number_input(key='tr_gain').value == 2750
+    assert [h.value for h in at.header][-1] == 'Request preview'      # the preview sits below the checks
