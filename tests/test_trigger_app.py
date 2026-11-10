@@ -125,3 +125,8 @@ def test_ellipse_tile_match():
     assert len(wide.tiles) > len(circle.tiles)
     fig = tiles.plot_tile_match_interactive(ellipse)
     assert any('ellipse' in (t.name or '') for t in fig.data)
+    first = ellipse.tiles[0].id
+    fig2 = tiles.plot_tile_match_interactive(ellipse, excluded={first}, added={'T00000'}, clickable=True)
+    markers = [t for t in fig2.data if t.name == 'tiles']
+    assert len(markers) == 1 and first in list(markers[0].customdata) and fig2.layout.clickmode == 'event+select'
+    assert any('excluded' in (a.text or '') for a in fig2.layout.annotations)

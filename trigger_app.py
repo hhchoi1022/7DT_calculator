@@ -183,7 +183,7 @@ def _import(df: pd.DataFrame, mapping: dict, rtype: str):
 
 @st.dialog('7DS Tile matcher', width='large')
 def tile_matcher_dialog(ts: trigger.TriggerSettings):
-    """Tiles inside a circle or an ellipse around a position; the matched tiles can be inserted into the table."""
+    """Tiles inside a circle or an ellipse around a position; tiles can be excluded or added by clicking them in the map."""
     ss = st.session_state
     c1, c2 = st.columns(2)
     ra_text = c1.text_input('RA (hh:mm:ss.s or deg)', key='tm_ra', placeholder='e.g. 10:00:00 or 150.0')
@@ -198,31 +198,50 @@ def tile_matcher_dialog(ts: trigger.TriggerSettings):
         b = e2.number_input('Semi-minor axis [deg]', 0.01, 30.0, 1.0, 0.1, key='tm_b')
         pa = e3.number_input('Position angle [deg, N through E]', 0.0, 180.0, 0.0, 1.0, key='tm_pa')
         radius, ellipse = 0.0, (a, b, pa)
-    x1, x2 = st.columns(2)
-    exptime = x1.number_input('Exposure time [s] for the inserted tiles', 1.0, float(ts.max_exptime), float(ts.default_exptime), 10.0, key='tm_exp')
-    count = int(x2.number_input('Frames per filter for the inserted tiles', 1, 999, int(ts.default_count), key='tm_cnt'))
     if st.button('Match tiles', key='tm_match', type='primary'):
         try:
             ra, dec = parse_coordinates(ra_text, dec_text)
-            m = get_tiles().match(ra, dec, radius_deg=radius, ellipse=ellipse)
-            ss['tm_result'] = m
+            ss['tm_result'] = get_tiles().match(ra, dec, radius_deg=radius, ellipse=ellipse)
+            ss['tm_excluded'], ss['tm_added'] = set(), set()
+            ss['tm_plot_ver'] = ss.get('tm_plot_ver', 0) + 1
         except ValueError as exc:
             st.error(str(exc))
     m = ss.get('tm_result')
-    if m is not None:
-        ids = [t.id for t in m.tiles]
-        st.markdown(f'**{len(ids)} tile(s)** around RA {m.ra:.4f}, Dec {m.dec:+.4f}' + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°'))
-        if ids:
-            table = pd.DataFrame(m.table())[['tile', 'ra_center', 'dec_center', 'tile_fraction_in_circle']].rename(columns={'tile_fraction_in_circle': 'fraction inside the area'})
-            st.dataframe(table.round(4), hide_index=True, width='stretch', height=min(35 * (len(ids) + 1) + 3, 300))
-            if st.button(f'Insert {len(ids)} tile(s) to the table', key='tm_insert'):
-                base = ss['tr_rows']
-                existing = _rows_as_text(base)
-                new = [{'objname': tid, 'exptime': f'{exptime:g}', 'count': str(count)} for tid in ids if tid not in {r['objname'] for r in existing}]
-                _remount(_frame(existing + new, list(base.columns)))
-                ss.pop('tm_result', None)
-                st.rerun()
-        st.plotly_chart(tiles.plot_tile_match_interactive(m), width='stretch', config={'displaylogo': False}, key='tm_plot')
+    if m is None:
+        return
+    excluded, added = ss.setdefault('tm_excluded', set()), ss.setdefault('tm_added', set())
+    chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
+    st.markdown(f'**{len(chosen)} tile(s) selected** around RA {m.ra:.4f}, Dec {m.dec:+.4f}'
+                + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°')
+                + (f' ({len(excluded)} excluded)' if excluded else '') + (f' ({len(added)} added)' if added else ''))
+    st.caption('Click a tile in the map to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
+    fig = tiles.plot_tile_match_interactive(m, excluded=excluded, added=added, clickable=True)
+    ev = st.plotly_chart(fig, width='stretch', config={'displaylogo': False, 'scrollZoom': True}, on_select='rerun', selection_mode='points',
+                         key=f'tm_plot_{ss.get("tm_plot_ver", 0)}')
+    points = ev.selection.points if ev is not None else []
+    clicked = {p.get('customdata') for p in points if p.get('customdata')}
+    if clicked:
+        matched_ids = {t.id for t in m.tiles}
+        for tid in clicked:
+            if tid in matched_ids:
+                excluded.symmetric_difference_update({tid})
+            else:
+                added.symmetric_difference_update({tid})
+        ss['tm_plot_ver'] = ss.get('tm_plot_ver', 0) + 1          # a fresh chart: the next click starts from no selection
+        st.rerun(scope='fragment')
+    if chosen:
+        rows = [t.row() for t in m.tiles if t.id in chosen] + [{'tile': tid, 'ra_center': float(get_tiles().ra[get_tiles()._index[tid]]), 'dec_center': float(get_tiles().dec[get_tiles()._index[tid]]), 'tile_fraction_in_circle': None} for tid in sorted(added)]
+        table = pd.DataFrame(rows)[['tile', 'ra_center', 'dec_center', 'tile_fraction_in_circle']].rename(columns={'tile_fraction_in_circle': 'fraction inside the area'})
+        st.dataframe(table.round(4), hide_index=True, width='stretch', height=min(35 * (len(rows) + 1) + 3, 260))
+        if st.button(f'Insert {len(chosen)} tile(s) to the table', key='tm_insert', type='primary'):
+            base = ss['tr_rows']
+            existing = _rows_as_text(base)
+            present = {r['objname'] for r in existing}
+            new_rows = [{'objname': tid} for tid in chosen if tid not in present]
+            _remount(_frame(existing + new_rows, list(base.columns)))
+            for k in ('tm_result', 'tm_excluded', 'tm_added'):
+                ss.pop(k, None)
+            st.rerun()
 
 
 def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
