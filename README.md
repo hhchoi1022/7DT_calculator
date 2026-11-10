@@ -17,7 +17,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | Exposure time / SNR | `etc_app.py` | `./run_etc.sh` | Empirical 7DT depth model: SNR for an exposure time and frame count, or the total exposure time needed for a target SNR, for every filter of an observation mode; point or extended sources; spectrum templates or uploads (Plotly) |
 | Overhead time | `overhead_app.py` | `./run_overhead.sh` | Total observing time of one observation (exposure, readout, filter changes, autofocus, slewing, dispatch) for an observation mode |
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
-| Observation request | `trigger_app.py` | `./run_trigger.sh` | Targets in a fixed format (table or uploaded file with column assignment), validated against the request rules and the current instrument, appended to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); visibility / depth / overhead / tile checks on demand |
+| Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
@@ -125,6 +125,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   binning, gain, the fixed priority and the hidden columns (note, comment = Project ID, weight, is_ToO,
   is_rapidToO, objtype). Writing needs a Google service-account key with editor access to the spreadsheet;
   without one the page still validates and offers the CSV. Column aliases live in `trigger.FIELDS`.
+  `data/projects.json` (git-ignored, see `projects.example.json`) maps Project IDs to their submission key and
+  allocated hours: with it, a request needs the key and may not exceed the allocation; without it every ID is
+  accepted. Survey requests take 7DS tile IDs as object names and fix the coordinates to the tile centres.
 
 ## Working rules (decisions already made with the telescope operator; keep them)
 

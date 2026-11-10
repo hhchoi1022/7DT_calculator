@@ -84,4 +84,41 @@ def test_trigger_page_renders():
     assert not at.exception, at.exception
     assert at.selectbox(key='tr_deepmode').value == 'g'
     assert any('Binning 1, gain 2750 and priority 50 are fixed' in c.value for c in at.caption)
-    assert [h.value for h in at.header][-1] == 'Request preview'      # the preview sits below the checks
+    assert [h.value for h in at.header][-1] == 'Request preview'      # the preview sits below the helper plots
+    assert any('Helper plots' == h.value for h in at.header)
+    at.radio(key='tr_type').set_value('Survey').run()                   # survey: tile IDs, coordinates from the tiles
+    assert not at.exception, at.exception
+    assert at.session_state['tr_rows'].columns.tolist() == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']
+    assert any('must be a 7DS tile ID' in e.value for e in at.error)      # NGC0253 is not a tile; T01022 is
+    assert not any('target(s) ready' in s.value for s in at.success)
+
+
+def test_survey_rows_and_projects(tmp_path):
+    ts = trigger.TriggerSettings.load()
+    cfg = _cfg()
+    norm, issues = trigger.validate_rows([{'objname': 't1022', 'exptime': '100', 'count': '3'}, {'objname': 'NGC0253', 'exptime': '100', 'count': '3'}],
+                                         ts, {'obsmode': 'Spec', 'specmode': 'specall'}, cfg, survey=True)
+    assert norm[0]['objname'] == 'T01022' and abs(norm[0]['RA_deg'] - 78.2609) < 1e-3 and norm[0]['RA'] == '78.260870'
+    assert [i.field for i in issues] == ['objname'] and issues[0].row == 2
+    om = trigger.request_obsmode('Spec', 'specall', cfg)
+    tt = trigger.total_time(norm[:1], om)
+    assert tt['n_targets'] == 1 and tt['exposure_s'] == 600 and tt['total_s'] > 600
+    f = tmp_path / 'projects.json'
+    f.write_text('{"_description": "x", "GRB followup": {"key": "abc", "allocated_hours": 30}}')
+    projects = trigger.load_projects(f)
+    assert projects == {'GRB_followup': {'key': 'abc', 'allocated_hours': 30}}
+    assert trigger.check_project('GRB followup', 'abc', projects) == (True, 'Project recognised.', 30.0)
+    assert trigger.check_project('GRB followup', 'nope', projects)[0] is False and trigger.check_project('other', '', projects)[0] is False
+    assert trigger.check_project('anything', '', None)[0] is True and trigger.load_projects(tmp_path / 'missing.json') is None
+
+
+def test_ellipse_tile_match():
+    from sevendt_calc import tiles
+    ts = tiles.TileSet()
+    circle = ts.match(10.0, -20.0, radius_deg=1.0)
+    ellipse = ts.match(10.0, -20.0, ellipse=(2.0, 0.5, 90.0))
+    assert ellipse.ellipse == (2.0, 0.5, 90.0) and ellipse.shape is not None and len(ellipse.tiles) >= 1
+    wide = ts.match(10.0, -20.0, ellipse=(3.0, 3.0, 0.0))
+    assert len(wide.tiles) > len(circle.tiles)
+    fig = tiles.plot_tile_match_interactive(ellipse)
+    assert any('ellipse' in (t.name or '') for t in fig.data)

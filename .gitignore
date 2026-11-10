@@ -6,3 +6,4 @@ data/cache/
 *.log
 nohup.out
 local.env*
+data/projects.json

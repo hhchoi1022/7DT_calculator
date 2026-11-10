@@ -18,6 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
+from shapely import affinity
 from shapely.geometry import Point, Polygon
 
 from .config import DATA_DIR
@@ -102,6 +103,8 @@ class TileMatch:
     nearest_id: str | None = None
     nearest_distance_deg: float | None = None
     polygons: dict = field(default_factory=dict, repr=False)     # nearby tiles, projected, for plotting
+    ellipse: tuple | None = None                                  # (semi-major deg, semi-minor deg, position angle deg) when an ellipse was searched
+    shape: object = field(default=None, repr=False)               # the projected search shape (circle or ellipse polygon)
 
     @property
     def containing(self) -> list:
@@ -173,18 +176,30 @@ class TileSet:
         return out
 
     def match(self, ra: float, dec: float, radius_deg: float = 0.0, edge_tolerance_arcmin: float = EDGE_TOLERANCE_ARCMIN,
-              min_overlap: float = DEFAULT_MIN_OVERLAP, target: Target | None = None) -> TileMatch:
+              min_overlap: float = DEFAULT_MIN_OVERLAP, target: Target | None = None, ellipse: tuple | None = None) -> TileMatch:
         """
         Match a position. radius_deg = 0: the tiles containing the point (with the distance to their
         edges). radius_deg > 0: additionally every tile whose area overlaps the circle by at least
-        `min_overlap` of the tile area.
+        `min_overlap` of the tile area. ellipse = (semi-major [deg], semi-minor [deg], position angle
+        [deg, north through east]) searches an ellipse instead of the circle.
         """
         target = target or Target(ra=ra, dec=dec)
         radius_deg = float(radius_deg or 0.0)
+        if ellipse is not None:
+            a, b, pa = (float(v) for v in ellipse)
+            if a <= 0 or b <= 0:
+                raise ValueError('ellipse axes must be positive')
+            radius_deg = max(a, b)
         idx = self.nearby(ra, dec, max(radius_deg, 0.0) + 1.5)
         polys = self.projected_polygons(idx, ra, dec)
         origin = Point(0.0, 0.0)
-        circle = origin.buffer(math.degrees(math.tan(math.radians(radius_deg))), quad_segs=64) if radius_deg > 0 else None
+        circle = None
+        if ellipse is not None:
+            unit = origin.buffer(1.0, quad_segs=64)
+            scaled = affinity.scale(unit, xfact=math.degrees(math.tan(math.radians(b))), yfact=math.degrees(math.tan(math.radians(a))), origin=(0, 0))
+            circle = affinity.rotate(scaled, -pa, origin=(0, 0))       # major axis from north (+y) towards east (+x)
+        elif radius_deg > 0:
+            circle = origin.buffer(math.degrees(math.tan(math.radians(radius_deg))), quad_segs=64)
         tol_deg = edge_tolerance_arcmin / 60.0
         tiles = []
         for tid, poly in polys.items():
@@ -207,7 +222,8 @@ class TileSet:
         nearest_id, nearest_dist = self._id_list[j], float(sep[j])
         return TileMatch(target=target, ra=float(ra), dec=float(dec), radius_deg=radius_deg, tiles=tiles,
                          edge_tolerance_arcmin=edge_tolerance_arcmin, min_overlap=min_overlap,
-                         nearest_id=nearest_id, nearest_distance_deg=nearest_dist, polygons=polys)
+                         nearest_id=nearest_id, nearest_distance_deg=nearest_dist, polygons=polys,
+                         ellipse=tuple(float(v) for v in ellipse) if ellipse is not None else None, shape=circle)
 
     def match_targets(self, targets, radius_deg: float = 0.0, **kwargs) -> list:
         return [self.match(t.ra, t.dec, radius_deg=radius_deg, target=t, **kwargs) for t in targets if t.has_coord]
@@ -294,7 +310,12 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None):
         if t is not None or (abs(cx) < extent and abs(cy) < extent):
             fig.add_annotation(x=cx, y=cy, text=tid if t is None else f'<b>{tid}</b>' + ('' if t.contains_target or t.overlap_fraction is None else f'<br>{100 * t.overlap_fraction:.0f} %'),
                                showarrow=False, font=dict(size=9 if t is None else 10, color='rgba(31,119,180,0.9)' if t is None else ('#cc6a00' if t.near_edge else '#b22222')))
-    if m.radius_deg > 0:
+    if m.ellipse is not None and m.shape is not None:
+        bx, by = m.shape.exterior.xy
+        a, b, pa = m.ellipse
+        fig.add_trace(go.Scatter(x=list(bx), y=list(by), mode='lines', line=dict(color='green', dash='dash', width=1.5),
+                                 name=f'ellipse {a:g}° x {b:g}°, PA {pa:g}°', hoverinfo='skip', showlegend=False))
+    elif m.radius_deg > 0:
         r = math.degrees(math.tan(math.radians(m.radius_deg)))
         ang = np.linspace(0, 2 * np.pi, 181)
         fig.add_trace(go.Scatter(x=r * np.cos(ang), y=r * np.sin(ang), mode='lines', line=dict(color='green', dash='dash', width=1.5),

@@ -16,6 +16,7 @@ import pandas as pd
 
 from .config import DATA_DIR, ObsMode, installed_filters, load_colormodes, load_filtinfo, load_specmodes, public_submodes, resolve_obsmode
 from .targets import parse_coordinates
+from .tiles import normalise_tile_id, tile_centre
 
 TRIGGER_JSON = DATA_DIR / 'trigger.json'
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
@@ -228,7 +229,7 @@ def _blank(value) -> bool:
     return value is None or str(value).strip() == '' or str(value).strip().lower() == 'nan'
 
 
-def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: dict | None = None) -> tuple[list, list]:
+def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: dict | None = None, survey: bool = False) -> tuple[list, list]:
     """
     rows: dicts with spreadsheet column names (strings as typed); blank cells take `defaults` (the page's
     observation settings: obsmode, specmode, colormode, filter_, exptime, count, obs_startdate, obs_enddate,
@@ -251,17 +252,29 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
             err('objname', 'required')
         elif len(row['objname']) > 100:
             err('objname', f'{len(row["objname"])} characters (maximum 100)')
-        # coordinates
+        # coordinates (survey: the object name is a 7DS tile and the coordinates are the tile centre)
         row['RA_deg'] = row['De_deg'] = None
-        if not row['RA']:
-            err('RA', 'required')
-        if not row['De']:
-            err('De', 'required')
-        if row['RA'] and row['De']:
-            try:
-                row['RA_deg'], row['De_deg'] = parse_coordinates(row['RA'], row['De'])
-            except ValueError as exc:
-                err('RA', str(exc))
+        if survey:
+            tid = normalise_tile_id(row['objname']) if row['objname'] else None
+            if row['objname'] and tid is None:
+                err('objname', 'must be a 7DS tile ID such as T01022 (survey request)')
+            elif tid is not None:
+                try:
+                    row['objname'] = tid
+                    row['RA_deg'], row['De_deg'] = tile_centre(tid)
+                    row['RA'], row['De'] = f'{row["RA_deg"]:.6f}', f'{row["De_deg"]:.6f}'
+                except ValueError as exc:
+                    err('objname', str(exc))
+        else:
+            if not row['RA']:
+                err('RA', 'required')
+            if not row['De']:
+                err('De', 'required')
+            if row['RA'] and row['De']:
+                try:
+                    row['RA_deg'], row['De_deg'] = parse_coordinates(row['RA'], row['De'])
+                except ValueError as exc:
+                    err('RA', str(exc))
         # observation mode and its sub-mode
         mode = next((m for m in settings.obsmodes if m.lower() == row['obsmode'].lower()), None)
         if mode is None:
@@ -354,3 +367,49 @@ def sample_file() -> bytes:
             b'NGC0253,00:47:33.12,-25:17:17.6,100,3,,\n'
             b'T01022,78.26087,-71.32075,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n'
             b'M31,10.68471,+41.26875,100,3,,\n')
+
+
+# ------------------------------------------------------------------ projects (keys and allocations)
+PROJECTS_JSON = DATA_DIR / 'projects.json'              # server-local, git-ignored: {"PROJECT_ID": {"key": "...", "allocated_hours": 30}}
+
+
+def load_projects(path: Path | str = PROJECTS_JSON) -> dict | None:
+    """The registered projects, or None when the file is absent (then any project is accepted without a key)."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text())
+    return {safe_project_id(k): v for k, v in raw.items() if not str(k).startswith('_')}
+
+
+def check_project(project_id: str, key: str, projects: dict | None) -> tuple[bool, str, float | None]:
+    """(accepted, message, allocated hours). Without a project list every ID is accepted."""
+    pid = safe_project_id(project_id)
+    if not pid:
+        return False, 'Enter the Project ID.', None
+    if projects is None:
+        return True, 'Project list not configured on this server: no key check.', None
+    entry = projects.get(pid)
+    if entry is None:
+        return False, f'Unknown Project ID {pid}.', None
+    if str(entry.get('key', '')) != str(key or ''):
+        return False, 'The Project key does not match.', None
+    hours = entry.get('allocated_hours')
+    return True, 'Project recognised.', float(hours) if hours is not None else None
+
+
+def total_time(rows: list, obsmode, config=None) -> dict:
+    """
+    Exposure and observation time of validated rows with the mode: open-shutter seconds (per unit,
+    exptime x frames x filters per unit) and the total with overheads from the overhead model.
+    """
+    from . import overhead as oh
+    good = [r for r in rows if r.get('exptime_s') is not None and r.get('count_n') is not None]
+    n_per_unit = max(obsmode.n_filters_per_unit, 1) if obsmode is not None else 1
+    exposure = sum(float(r['exptime_s']) * int(r['count_n']) * n_per_unit for r in good)
+    total = exposure
+    if obsmode is not None and good:
+        cfg = config or oh.OverheadConfig.load()
+        reqs = [oh.ObsRequest(r['objname'] or f'row {i}', float(r['exptime_s']), int(r['count_n']), obsmode, 'per_filter', config=cfg) for i, r in enumerate(good, start=1)]
+        total = oh.estimate(reqs, cfg).total
+    return {'n_targets': len(good), 'exposure_s': exposure, 'total_s': total}

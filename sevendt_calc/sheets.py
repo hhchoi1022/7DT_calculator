@@ -66,3 +66,32 @@ def append_rows(spreadsheet_url: str, worksheet_title: str, header: list, rows: 
     values = [[str(r.get(c, '')) for c in columns] for r in rows]
     ws.append_rows(values, value_input_option='RAW', table_range='A1')
     return {'worksheet': worksheet_title, 'created': created, 'n_rows': len(values), 'url': f'{sh.url}#gid={ws.id}'}
+
+
+def read_rows(spreadsheet_url: str, worksheet_title: str, key_path: Path | str) -> list:
+    """The rows of a worksheet as dicts keyed by its header; [] when the worksheet does not exist or is empty."""
+    import gspread
+    gc = _client(key_path)
+    sh = gc.open_by_url(spreadsheet_url)
+    try:
+        ws = sh.worksheet(worksheet_title)
+    except gspread.WorksheetNotFound:
+        return []
+    return [{str(k): ('' if v is None else str(v)) for k, v in r.items()} for r in ws.get_all_records(default_blank='')]
+
+
+def replace_rows(spreadsheet_url: str, worksheet_title: str, header: list, rows: list, key_path: Path | str) -> dict:
+    """Overwrite the worksheet with the header and `rows` (dicts keyed by header name); creates it when missing."""
+    import gspread
+    gc = _client(key_path)
+    sh = gc.open_by_url(spreadsheet_url)
+    try:
+        ws = sh.worksheet(worksheet_title)
+        created = False
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=worksheet_title, rows=max(200, len(rows) + 20), cols=max(len(header), 26))
+        created = True
+    ws.clear()
+    values = [list(header)] + [[str(r.get(c, '')) for c in header] for r in rows]
+    ws.update(range_name='A1', values=values, value_input_option='RAW')
+    return {'worksheet': worksheet_title, 'created': created, 'n_rows': len(rows), 'url': f'{sh.url}#gid={ws.id}', 'replaced': True}
