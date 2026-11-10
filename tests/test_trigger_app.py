@@ -30,17 +30,18 @@ def test_validation_rules():
         {'objname': 'good', 'RA': '10.5', 'De': '-20.25', 'exptime': '100', 'count': '3'},
         {'objname': '', 'RA': 'abc', 'De': '-20', 'exptime': '100', 'count': '3'},             # missing name, bad RA
         {'objname': 'x' * 101, 'RA': '1', 'De': '2', 'exptime': '200', 'count': '3'},         # too long, exptime above max
-        {'objname': 'warn', 'RA': '1', 'De': '2', 'exptime': '60', 'count': '2,2', 'obs_startdate': '2026-11-11T00:00:00', 'obs_enddate': '2026-11-01'},
+        {'objname': 'warn', 'RA': '1', 'De': '2', 'exptime': '60', 'count': '2', 'obs_startdate': '2026-11-11T00:00:00', 'obs_enddate': '2026-11-01'},
         {'objname': 'deep', 'RA': '1', 'De': '2', 'obsmode': 'deep', 'filter_': 'r', 'exptime': '100', 'count': '3', 'binning': '2', 'gain': '4030'},
         {'objname': 'nomode', 'RA': '1', 'De': '2', 'obsmode': 'Deep', 'exptime': '100', 'count': '3'},
         {'objname': 'date', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3', 'obs_startdate': '11/11/2026'},
         {'objname': 'noexp', 'RA': '1', 'De': '2'},                                            # exposure time and frames missing
+        {'objname': 'list', 'RA': '1', 'De': '2', 'exptime': '100,100', 'count': '3,3'},         # lists are not accepted
     ]
     norm, issues = trigger.validate_rows(rows, ts, defaults, cfg)
     by_row = {}
     for it in issues:
         by_row.setdefault(it.row, []).append((it.field, it.level))
-    assert 1 not in by_row and norm[0]['exptime_list'] == [100.0, 100.0] and norm[0]['count_list'] == [3, 3]
+    assert 1 not in by_row and norm[0]['exptime_s'] == 100.0 and norm[0]['count_n'] == 3
     assert ('objname', 'error') in by_row[2] and ('RA', 'error') in by_row[2]
     assert ('objname', 'error') in by_row[3] and ('exptime', 'error') in by_row[3]
     assert ('exptime', 'warning') in by_row[4] and ('obs_enddate', 'error') in by_row[4]
@@ -48,9 +49,10 @@ def test_validation_rules():
     assert ('filter_', 'error') in by_row[6]
     assert ('obs_startdate', 'error') in by_row[7]
     assert ('exptime', 'error') in by_row[8] and ('count', 'error') in by_row[8]
+    assert ('exptime', 'error') in by_row[9] and ('count', 'error') in by_row[9]
     assert trigger.REQUIRED == ('objname', 'RA', 'De', 'exptime', 'count')
     formatted = trigger.format_rows(norm, 'My Project', ts)
-    assert formatted[0]['exptime'] == '100,100' and formatted[0]['count'] == '3,3' and formatted[0]['RA'] == '10.500000'
+    assert formatted[0]['exptime'] == '100' and formatted[0]['count'] == '3' and formatted[0]['RA'] == '10.500000'
     assert formatted[0]['comment'] == 'My_Project' and formatted[0]['objtype'] == 'Open' and formatted[0]['priority'] == '50'
     assert formatted[4]['specmode'] == 'None' and formatted[4]['filter_'] == 'r' and list(formatted[0]) == list(trigger.SHEET_COLUMNS)
     assert ts.worksheet_name('My Project') == f'{ts.period}_My_Project'

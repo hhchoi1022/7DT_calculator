@@ -201,7 +201,7 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
         b2.caption('Object name, RA/Dec, exposure time and frames are required. RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. '
-                   f'Exposure time and frames: one value per order, comma-separated (e.g. 100,100); the standard is {int(ts.default_exptime)} s and {ts.default_count} frames. '
+                   f'Exposure time and frames: one number each, applied to every filter of the mode (standard {int(ts.default_exptime)} s and {ts.default_count} frames). '
                    'Dates are optional (UTC). Use the last (empty) row to add a target; select rows and press Delete to remove them.')
     if len(edited) != len(base) or _missing_required(edited) != status:      # rows added/removed or a required cell filled/cleared: redraw the marks
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
@@ -351,9 +351,9 @@ def tools_section(norm: list, om, cfg: dict):
     """Visibility, depth, overhead and tile checks with their figures: four collapsible panels side by side, computed as the inputs change."""
     st.header('Checks')
     targets = tuple((r['objname'] or f'row {i}', float(r['RA_deg']), float(r['De_deg'])) for i, r in enumerate(norm, start=1) if r.get('RA_deg') is not None)
-    first = next((r for r in norm if r.get('exptime_list') and r.get('count_list')), None)
-    exptime = float(first['exptime_list'][0]) if first else 100.0
-    count = int(first['count_list'][0]) if first else 3
+    first = next((r for r in norm if r.get('exptime_s') is not None and r.get('count_n') is not None), None)
+    exptime = float(first['exptime_s']) if first else 100.0
+    count = int(first['count_n']) if first else 3
     site, cons = cfg['site'], cfg['constraints']
     cons_d = {'min_alt': cons.min_alt, 'max_alt': cons.max_alt, 'moon_sep': cons.moon_sep, 'sun_alt': cons.sun_alt}
     table = tuple((u, tuple(f)) for u, f in om.filters_by_unit.items()) if om is not None else ()
@@ -381,7 +381,7 @@ def tools_section(norm: list, om, cfg: dict):
             spectrum = st.selectbox('Spectrum', keys, index=keys.index('Star: G2V') if 'Star: G2V' in keys else 0, key='tr_spec')
             with st.spinner('Computing...'):
                 df, fig_snr, fig_phot = depth_cached(float(mag), band, spectrum, om.mode, om.submode, table, exptime, count, typical_seeing())
-            st.caption(f'50 % Moon at 90°, 5 h after sunset, typical seeing; {exptime:g} s x {count} frames per filter (first target, first order).')
+            st.caption(f'50 % Moon at 90°, 5 h after sunset, typical seeing; {exptime:g} s x {count} frames per filter (first target).')
             st.dataframe(df[['filter', 'mag_AB', 'UL5_stacked', 'SNR_stacked']].round(2), hide_index=True, width='stretch')
             st.plotly_chart(fig_snr, width='stretch', config={'displaylogo': False}, key='tr_snr_plot')
             st.plotly_chart(fig_phot, width='stretch', config={'displaylogo': False}, key='tr_phot_plot')
@@ -396,7 +396,7 @@ def tools_section(norm: list, om, cfg: dict):
             st.metric('Overhead', overhead.format_duration(metrics['overhead']), help=f'efficiency {100 * metrics["efficiency"]:.0f} %')
             st.markdown('\n'.join(f'- {line}' for line in lines))
             st.image(png, width='stretch')
-            st.caption('Per target, first target\'s exposure and frames, first order; autofocus ' + ('once per filter.' if policy == 'per_filter' else 'none.'))
+            st.caption('Per target, first target\'s exposure and frames; autofocus ' + ('once per filter.' if policy == 'per_filter' else 'none.'))
 
     with c_tile, st.expander('7DS tiles'):
         if not targets:

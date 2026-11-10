@@ -39,8 +39,8 @@ FIELDS = (
     Field('specmode', 'Specmode', False, ('spec mode', 'spec_mode')),
     Field('colormode', 'Colormode', False, ('color mode', 'color_mode', 'colourmode')),
     Field('filter_', 'Deepmode / filter', False, ('filter', 'filters', 'deepmode', 'deep mode', 'band')),
-    Field('exptime', 'Exposure time per frame [s]', True, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one value per order, comma-separated (e.g. 100,100); 180 s at most'),
-    Field('count', 'Frames per filter', True, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one value per order, comma-separated (e.g. 3,3)'),
+    Field('exptime', 'Exposure time per frame [s]', True, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one number, 180 s at most (standard 100)'),
+    Field('count', 'Frames per filter', True, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one whole number (standard 3)'),
     Field('obs_startdate', 'Start date (Optional)', False, ('obs_starttime', 'start', 'startdate', 'start_date', 'obs_start', 'starttime'), f'UTC, e.g. {DATE_EXAMPLE}'),
     Field('obs_enddate', 'End date (Optional)', False, ('obs_endtime', 'end', 'enddate', 'end_date', 'obs_end', 'endtime'), 'UTC, e.g. 2026-12-01T00:00:00'),
     Field('binning', 'Binning', False, ('bin',)),
@@ -193,24 +193,22 @@ class Issue:
         return f'Row {self.row}, {LABELS.get(self.field, self.field)}: {self.message}'
 
 
-def parse_sequence(value, n: int, kind: str) -> tuple[list, str | None]:
-    """'100' or '100,120' -> one value per order (a single value is repeated); kind 'float' or 'int'."""
-    parts = [p.strip() for p in str(value).replace(';', ',').split(',') if p.strip()]
-    if not parts:
-        return [], 'missing'
+def parse_number(value, kind: str) -> tuple[float | int | None, str | None]:
+    """A single number ('float' or 'int'); lists such as '100,100' are rejected."""
+    text = str(value if value is not None else '').strip()
+    if not text:
+        return None, 'required'
+    if ',' in text or ';' in text or ' ' in text:
+        return None, 'one value only (no lists)'
     try:
-        vals = [float(p) for p in parts]
-        if kind == 'int':
-            if any(v != int(v) for v in vals):
-                return [], 'must be whole numbers'
-            vals = [int(v) for v in vals]
+        v = float(text)
     except ValueError:
-        return [], f'not a number: {value}'
-    if len(vals) == 1 and n > 1:
-        vals = vals * n
-    if len(vals) != n:
-        return vals, f'{len(vals)} value(s) given but the mode has {n} order(s)'
-    return vals, None
+        return None, f'not a number: {text}'
+    if kind == 'int':
+        if v != int(v):
+            return None, 'must be a whole number'
+        return int(v), None
+    return v, None
 
 
 def parse_date(value) -> tuple[datetime | None, str | None]:
@@ -284,25 +282,22 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
             if row['filter_'] and row['filter_'] not in installed:
                 err('filter_', f'{row["filter_"]} is not installed in any unit')
             row['specmode'] = row['colormode'] = ''
-        sub = row['specmode'] or row['colormode'] or row['filter_']
-        n = n_orders(mode, sub, cfg) if mode else 1
-        # exposure time and count per order
-        vals, e = parse_sequence(row['exptime'], n, 'float')
-        row['exptime_list'] = vals
+        # exposure time and count: one number each, applied to every order of the mode
+        v, e = parse_number(row['exptime'], 'float')
+        row['exptime_s'] = v
         if e:
-            err('exptime', 'required' if e == 'missing' else e)
-        else:
-            if any(v <= 0 for v in vals):
-                err('exptime', 'must be positive')
-            elif any(v > settings.max_exptime for v in vals):
-                err('exptime', f'above {settings.max_exptime:g} s')
-            elif any(v != settings.default_exptime for v in vals):
-                warn('exptime', f'differs from the standard {settings.default_exptime:g} s; the depth model was fitted on {settings.default_exptime:g} s frames')
-        vals, e = parse_sequence(row['count'], n, 'int')
-        row['count_list'] = vals
+            err('exptime', e)
+        elif v <= 0:
+            err('exptime', 'must be positive')
+        elif v > settings.max_exptime:
+            err('exptime', f'above {settings.max_exptime:g} s')
+        elif v != settings.default_exptime:
+            warn('exptime', f'differs from the standard {settings.default_exptime:g} s; the depth model was fitted on {settings.default_exptime:g} s frames')
+        v, e = parse_number(row['count'], 'int')
+        row['count_n'] = v
         if e:
-            err('count', 'required' if e == 'missing' else e)
-        elif any(v < 1 for v in vals):
+            err('count', e)
+        elif v < 1:
             err('count', 'must be at least 1')
         # dates
         dates = {}
@@ -340,8 +335,8 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
             'RA': f'{r["RA_deg"]:.6f}' if r.get('RA_deg') is not None else r['RA'],
             'De': f'{r["De_deg"]:.6f}' if r.get('De_deg') is not None else r['De'],
             'obsmode': r['obsmode'], 'specmode': r['specmode'] or 'None', 'colormode': r['colormode'] or 'None', 'filter_': r['filter_'] or 'None',
-            'exptime': ','.join(f'{v:g}' for v in r.get('exptime_list') or []),
-            'count': ','.join(str(v) for v in r.get('count_list') or []),
+            'exptime': f'{r["exptime_s"]:g}' if r.get('exptime_s') is not None else r['exptime'],
+            'count': str(r['count_n']) if r.get('count_n') is not None else r['count'],
             'obs_startdate': r['obs_startdate'] or 'None', 'obs_enddate': r['obs_enddate'] or 'None',
             'binning': r['binning'], 'gain': r['gain'], 'priority': r['priority'],
         }
@@ -356,5 +351,5 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
 def sample_file() -> bytes:
     return (b'objname,RA,De,obsmode,specmode,filter_,exptime,count,obs_startdate,obs_enddate\n'
             b'NGC0253,00:47:33.12,-25:17:17.6,Spec,specall,,100,3,,\n'
-            b'T01022,78.26087,-71.32075,Spec,specall,,"100,100","3,3",2026-11-11T00:00:00,2026-12-01T00:00:00\n'
+            b'T01022,78.26087,-71.32075,Spec,specall,,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n'
             b'M31,10.68471,+41.26875,Deep,,r,100,3,,\n')
