@@ -1,0 +1,22 @@
+{
+  "_description": "Settings of the Observation request page (trigger_app.py). Rows are appended to the worksheet '<period>_<Project ID>' of spreadsheet_url. specmodes null = the public Spec list (data/public_modes.json). Exposure times above max_exptime are errors, any value other than default_exptime is a warning. hidden: columns written with fixed values (comment = the Project ID). The Google service-account key is found through data/settings.json (google_service_account_key), the GOOGLE_APPLICATION_CREDENTIALS variable or TCSpy's googleSheet.config.",
+  "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1UorU7P_UMr22Luw6q6GLQYk4-YicGRATwCePRxkx2Ms/edit",
+  "period": "2610_2708",
+  "obsmodes": ["Spec", "Color", "Deep", "Single", "Search"],
+  "specmodes": null,
+  "colormodes": ["gr", "ri", "gi", "gri"],
+  "deepmodes": ["g", "r", "i"],
+  "default_exptime": 100,
+  "max_exptime": 180,
+  "default_count": 3,
+  "default_binning": 1,
+  "default_gain": 2750,
+  "priority": 50,
+  "gain_table": [
+    {"gain": 0, "gain_db": "0.0 dB", "multiply": "1x", "conversion": "0.80 e-/ADU", "read_noise": "3.51 e-", "full_well": "52,800 e-"},
+    {"gain": 2749, "gain_db": "9.7 dB", "multiply": "3x", "conversion": "0.26 e-/ADU", "read_noise": "3.15 e-", "full_well": "17,000 e-"},
+    {"gain": 2750, "gain_db": "9.7 dB", "multiply": "3x", "conversion": "0.26 e-/ADU", "read_noise": "1.46 e-", "full_well": "17,000 e-"},
+    {"gain": 4030, "gain_db": "36.0 dB", "multiply": "63x", "conversion": "0.012 e-/ADU", "read_noise": "1.28 e-", "full_well": "800 e-"}
+  ],
+  "hidden": {"note": "None", "weight": 1, "is_ToO": 0, "is_rapidToO": 0, "objtype": "Open"}
+}

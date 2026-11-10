@@ -595,3 +595,24 @@ def plot_monthly_interactive(m: MonthlyVisibility, site: Site | None = None, sho
                       legend=dict(orientation='h', yanchor='bottom', y=-0.16, xanchor='left', x=0, font=dict(size=11)),
                       title=dict(text=f'{site.name} observable hours, from {m.dates[0]:%Y-%m-%d} to {m.dates[-1] + timedelta(days=1):%Y-%m-%d}', font=dict(size=15)))
     return fig
+
+
+def night_summary(r: VisibilityResult) -> dict:
+    """Status of a target over the whole night (no requested time): observable windows or the reason why not."""
+    c = r.constraints
+    night = r.sun_alt <= c.sun_alt
+    alt_ok = night & (r.alt >= c.min_alt) & (r.alt <= c.max_alt)
+    if r.windows:
+        status, reason = 'OK', ''
+    elif not alt_ok.any():
+        status, reason = 'WARNING', f'never above {c.min_alt:g}° during the night'
+    elif not (alt_ok & (r.moon_sep >= c.moon_sep)).any():
+        status, reason = 'WARNING', f'Moon closer than {c.moon_sep:g}°'
+    else:
+        status, reason = 'WARNING', 'not observable'
+    sep_night = r.moon_sep[night] if night.any() else r.moon_sep
+    return {'target': r.target.label, 'status': status, 'observable_hours': round(r.observable_hours, 1),
+            'windows': r.window_text(), 'max_alt_deg': round(r.max_alt, 1),
+            'max_alt_time_utc': r.max_alt_time.iso[:16] if r.max_alt_time is not None else '',
+            'moon_sep_deg': f'{sep_night.min():.0f}-{sep_night.max():.0f}', 'moon_illumination': round(r.moon_illumination, 2),
+            'note': reason}

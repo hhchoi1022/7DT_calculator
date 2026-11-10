@@ -17,6 +17,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | Exposure time / SNR | `etc_app.py` | `./run_etc.sh` | Empirical 7DT depth model: SNR for an exposure time and frame count, or the total exposure time needed for a target SNR, for every filter of an observation mode; point or extended sources; spectrum templates or uploads (Plotly) |
 | Overhead time | `overhead_app.py` | `./run_overhead.sh` | Total observing time of one observation (exposure, readout, filter changes, autofocus, slewing, dispatch) for an observation mode |
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
+| Observation request | `trigger_app.py` | `./run_trigger.sh` | Targets in a fixed format (table or uploaded file with column assignment), validated against the request rules and the current instrument, appended to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); visibility / depth / overhead / tile checks on demand |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
@@ -69,11 +70,13 @@ sevendt_calc/            core package, no Streamlit imports
   overhead.py            overhead model (OverheadConfig from data/overhead.json), estimate(), timeline plot
   tiles.py               7DS tile catalogue (data/final_tiles.txt), tile matching, tile-ID lookup, Plotly maps
   modebuild.py           mode builder core: validation, JSON export in TCSpy layout, padding, add/remove helpers
+  trigger.py             observation requests: spreadsheet columns, upload parsing + column aliases, validation, row formatting
+  sheets.py              Google Sheets append (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
   modeplot.py            observation-mode figure (transmission curves + unit x order grid), matplotlib and Plotly
 ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
-data/                    settings.json (configuration folder), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
+data/                    settings.json (configuration folder, sheet key), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -115,6 +118,13 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   unit that has them). `ObsMode.filter_multiplicity()` gives the unit count per filter. The modes offered on the
   ETC and Overhead pages are those listed in `data/public_modes.json` (list order = menu order, first entry =
   default; `null` = every file). The Mode builder always lists every file.
+
+- **Observation requests** (`data/trigger.json`): spreadsheet URL, period prefix of the worksheet name, the
+  selectable obsmodes / colormodes / deepmodes (specmodes follow `public_modes.json`), default and maximum
+  exposure time (above the maximum = error, any other value than the default = warning), default count,
+  binning, gain, the fixed priority and the hidden columns (note, comment = Project ID, weight, is_ToO,
+  is_rapidToO, objtype). Writing needs a Google service-account key with editor access to the spreadsheet;
+  without one the page still validates and offers the CSV. Column aliases live in `trigger.FIELDS`.
 
 ## Working rules (decisions already made with the telescope operator; keep them)
 
