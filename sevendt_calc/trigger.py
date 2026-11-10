@@ -39,8 +39,8 @@ FIELDS = (
     Field('specmode', 'Specmode', False, ('spec mode', 'spec_mode')),
     Field('colormode', 'Colormode', False, ('color mode', 'color_mode', 'colourmode')),
     Field('filter_', 'Deepmode / filter', False, ('filter', 'filters', 'deepmode', 'deep mode', 'band')),
-    Field('exptime', 'Exposure time per frame [s]', False, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one value per order, comma-separated; blank = 100'),
-    Field('count', 'Frames per filter', False, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one value per order, comma-separated; blank = 3'),
+    Field('exptime', 'Exposure time per frame [s]', True, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one value per order, comma-separated (e.g. 100,100); 180 s at most'),
+    Field('count', 'Frames per filter', True, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one value per order, comma-separated (e.g. 3,3)'),
     Field('obs_startdate', 'Start date (Optional)', False, ('obs_starttime', 'start', 'startdate', 'start_date', 'obs_start', 'starttime'), f'UTC, e.g. {DATE_EXAMPLE}'),
     Field('obs_enddate', 'End date (Optional)', False, ('obs_endtime', 'end', 'enddate', 'end_date', 'obs_end', 'endtime'), 'UTC, e.g. 2026-12-01T00:00:00'),
     Field('binning', 'Binning', False, ('bin',)),
@@ -49,6 +49,8 @@ FIELDS = (
 )
 FIELD_BY_NAME = {f.name: f for f in FIELDS}
 REQUIRED = tuple(f.name for f in FIELDS if f.required)
+SHORT_LABELS = {'objname': 'Object name', 'RA': 'RA', 'De': 'Dec', 'exptime': 'Exposure time', 'count': 'Frames'}
+FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate')   # shown in the columns help
 HIDDEN_COLUMNS = ('note', 'comment', 'weight', 'is_ToO', 'is_rapidToO', 'objtype')
 SHEET_COLUMNS = tuple(f.name for f in FIELDS) + HIDDEN_COLUMNS
 LABELS = {f.name: f.label for f in FIELDS}
@@ -285,10 +287,10 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
         sub = row['specmode'] or row['colormode'] or row['filter_']
         n = n_orders(mode, sub, cfg) if mode else 1
         # exposure time and count per order
-        vals, e = parse_sequence(row['exptime'] or settings.default_exptime, n, 'float')
+        vals, e = parse_sequence(row['exptime'], n, 'float')
         row['exptime_list'] = vals
         if e:
-            err('exptime', e)
+            err('exptime', 'required' if e == 'missing' else e)
         else:
             if any(v <= 0 for v in vals):
                 err('exptime', 'must be positive')
@@ -296,10 +298,10 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
                 err('exptime', f'above {settings.max_exptime:g} s')
             elif any(v != settings.default_exptime for v in vals):
                 warn('exptime', f'differs from the standard {settings.default_exptime:g} s; the depth model was fitted on {settings.default_exptime:g} s frames')
-        vals, e = parse_sequence(row['count'] or settings.default_count, n, 'int')
+        vals, e = parse_sequence(row['count'], n, 'int')
         row['count_list'] = vals
         if e:
-            err('count', e)
+            err('count', 'required' if e == 'missing' else e)
         elif any(v < 1 for v in vals):
             err('count', 'must be at least 1')
         # dates

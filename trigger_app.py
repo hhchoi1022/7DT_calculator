@@ -18,7 +18,8 @@ from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, figure_png, 
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
 EDITOR_BASE = ['objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate']
-EXAMPLE_ROWS = [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6'}, {'objname': 'T01022', 'RA': '78.26087', 'De': '-71.32075'}]
+EXAMPLE_ROWS = [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6', 'exptime': '100', 'count': '3'},
+                {'objname': 'T01022', 'RA': '78.26087', 'De': '-71.32075', 'exptime': '100', 'count': '3'}]
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
@@ -53,7 +54,7 @@ def _missing_required(df: pd.DataFrame) -> list:
         if not any(values.values()):
             out.append('')
             continue
-        missing = [trigger.LABELS[c].split(' (')[0] for c, v in values.items() if not v]
+        missing = [trigger.SHORT_LABELS.get(c, c) for c, v in values.items() if not v]
         out.append('missing: ' + ', '.join(missing) if missing else '')
     return out
 
@@ -131,18 +132,17 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
             st.image(obsmode_png(om.mode, om.submode, tuple((u, tuple(f)) for u, f in om.filters_by_unit.items())), width='stretch')
     binning, gain = int(ts.default_binning), int(ts.default_gain)
     st.caption(f'Binning {binning}, gain {gain} and priority {ts.priority} are fixed by the observatory. To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
-    defaults = {'obsmode': obsmode, sub_field: submode, 'exptime': f'{ts.default_exptime:g}', 'count': str(ts.default_count),
-                'binning': str(binning), 'gain': str(gain), 'obs_startdate': '', 'obs_enddate': ''}
+    defaults = {'obsmode': obsmode, sub_field: submode, 'binning': str(binning), 'gain': str(gain), 'obs_startdate': '', 'obs_enddate': ''}
     return defaults, om
 
 
 def columns_help():
     with st.expander('Columns of a request file'):
-        rows = [{'column in the file / spreadsheet': f.name, 'shown as': f.label, 'required': 'yes' if f.required else 'optional (page setting when blank)',
-                 'note': f.help} for f in trigger.FIELDS]
+        rows = [{'column': f.name, 'shown as': f.label, 'required': 'yes' if f.required else 'optional', 'note': f.help}
+                for f in trigger.FIELDS if f.name in trigger.FILE_COLUMNS]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
-        st.caption('Column names are matched ignoring case, spaces and underscores; common aliases (name, ra, dec, filter, exposure, ...) are recognised. '
-                   'Unrecognised columns can be assigned after the upload. Exposure time and frames may hold one value per order, comma-separated.')
+        st.caption('Column names are matched ignoring case, spaces and underscores; common aliases (name, ra, dec, exposure, frames, ...) are recognised. '
+                   'Unrecognised columns can be assigned after the upload. The observation mode comes from the settings above.')
 
 
 def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
@@ -188,7 +188,7 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         view.insert(0, 'Check', status)
         css = pd.DataFrame('', index=view.index, columns=view.columns)
         css['Check'] = ['background-color: #ffb3b3; color: #7a0000; font-weight: 600' if v else 'background-color: #e8f5e9' for v in status]
-        col_cfg = {'Check': st.column_config.TextColumn('Check', help='Red: a required column (object name, RA, Dec) is empty.', width='medium')}
+        col_cfg = {'Check': st.column_config.TextColumn('Check', help='Red: a required column (object name, RA, Dec, exposure time, frames) is empty.', width=240)}
         for c in base.columns:
             f = trigger.FIELD_BY_NAME.get(c)
             if c in DATE_COLUMNS:
@@ -200,9 +200,9 @@ def targets_section(ts: trigger.TriggerSettings) -> pd.DataFrame:
         edited = edited.drop(columns=['Check'], errors='ignore')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         resolve = b1.button('Resolve names to RA/Dec', width='stretch', key='tr_resolve')
-        b2.caption('RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. Use the last (empty) row to add a target; select rows and press Delete to remove them. '
-                   f'Exposure time and frames: one value per order, comma-separated (e.g. 100,100); blank = {int(ts.default_exptime)} s and {ts.default_count} frames. '
-                   'Dates: UTC, ' + trigger.DATE_EXAMPLE + ', optional.')
+        b2.caption('Object name, RA/Dec, exposure time and frames are required. RA/Dec in degrees or hh:mm:ss / ±dd:mm:ss. '
+                   f'Exposure time and frames: one value per order, comma-separated (e.g. 100,100); the standard is {int(ts.default_exptime)} s and {ts.default_count} frames. '
+                   'Dates are optional (UTC). Use the last (empty) row to add a target; select rows and press Delete to remove them.')
     if len(edited) != len(base) or _missing_required(edited) != status:      # rows added/removed or a required cell filled/cleared: redraw the marks
         _remount(_frame(edited.to_dict('records'), list(base.columns)))
         st.rerun()

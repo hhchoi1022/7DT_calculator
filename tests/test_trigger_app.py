@@ -25,15 +25,16 @@ def test_read_table_formats():
 def test_validation_rules():
     ts = trigger.TriggerSettings.load()
     cfg = _cfg()
-    defaults = {'obsmode': 'Spec', 'specmode': 'specall', 'exptime': '100', 'count': '3', 'binning': '1', 'gain': '2750'}
+    defaults = {'obsmode': 'Spec', 'specmode': 'specall', 'binning': '1', 'gain': '2750'}
     rows = [
-        {'objname': 'good', 'RA': '10.5', 'De': '-20.25'},
-        {'objname': '', 'RA': 'abc', 'De': '-20'},                                            # missing name, bad RA
-        {'objname': 'x' * 101, 'RA': '1', 'De': '2', 'exptime': '200'},                       # too long, exptime above max
+        {'objname': 'good', 'RA': '10.5', 'De': '-20.25', 'exptime': '100', 'count': '3'},
+        {'objname': '', 'RA': 'abc', 'De': '-20', 'exptime': '100', 'count': '3'},             # missing name, bad RA
+        {'objname': 'x' * 101, 'RA': '1', 'De': '2', 'exptime': '200', 'count': '3'},         # too long, exptime above max
         {'objname': 'warn', 'RA': '1', 'De': '2', 'exptime': '60', 'count': '2,2', 'obs_startdate': '2026-11-11T00:00:00', 'obs_enddate': '2026-11-01'},
-        {'objname': 'deep', 'RA': '1', 'De': '2', 'obsmode': 'deep', 'filter_': 'r', 'binning': '2', 'gain': '4030'},
-        {'objname': 'nomode', 'RA': '1', 'De': '2', 'obsmode': 'Deep'},
-        {'objname': 'date', 'RA': '1', 'De': '2', 'obs_startdate': '11/11/2026'},
+        {'objname': 'deep', 'RA': '1', 'De': '2', 'obsmode': 'deep', 'filter_': 'r', 'exptime': '100', 'count': '3', 'binning': '2', 'gain': '4030'},
+        {'objname': 'nomode', 'RA': '1', 'De': '2', 'obsmode': 'Deep', 'exptime': '100', 'count': '3'},
+        {'objname': 'date', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3', 'obs_startdate': '11/11/2026'},
+        {'objname': 'noexp', 'RA': '1', 'De': '2'},                                            # exposure time and frames missing
     ]
     norm, issues = trigger.validate_rows(rows, ts, defaults, cfg)
     by_row = {}
@@ -46,6 +47,8 @@ def test_validation_rules():
     assert 5 not in by_row and norm[4]['obsmode'] == 'Deep' and norm[4]['binning'] == '2' and norm[4]['gain'] == '4030'
     assert ('filter_', 'error') in by_row[6]
     assert ('obs_startdate', 'error') in by_row[7]
+    assert ('exptime', 'error') in by_row[8] and ('count', 'error') in by_row[8]
+    assert trigger.REQUIRED == ('objname', 'RA', 'De', 'exptime', 'count')
     formatted = trigger.format_rows(norm, 'My Project', ts)
     assert formatted[0]['exptime'] == '100,100' and formatted[0]['count'] == '3,3' and formatted[0]['RA'] == '10.500000'
     assert formatted[0]['comment'] == 'My_Project' and formatted[0]['objtype'] == 'Open' and formatted[0]['priority'] == '50'
