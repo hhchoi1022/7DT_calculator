@@ -94,11 +94,14 @@ def project_section(ts: trigger.TriggerSettings):
     key = c2.text_input('Project key', key='tr_key', type='password', help=f'Given with the time allocation. Lost it? Contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     projects = trigger.load_projects()
     ok, msg, hours = trigger.check_project(project, key, projects)
-    if trigger.safe_project_id(project):
-        c3.markdown(f'Worksheet: **{ts.worksheet_name(project)}**' + (f' · allocated {hours:g} h' if hours is not None else ''))
-        (c3.caption if ok else c3.error)(msg)
-    else:
+    if not trigger.safe_project_id(project):
         c3.caption('The Project ID is required before submitting.')
+    elif ok and hours is not None:
+        c3.metric('Time allocated', f'{hours:g} h', help='Total observation time of the project for this period, overheads included.')
+    elif ok:
+        c3.caption(msg)
+    else:
+        c3.error(msg)
     return project, ok, hours
 
 

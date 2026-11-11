@@ -81,7 +81,8 @@ def test_trigger_page_renders():
     assert any('1 target(s) ready' in s.value for s in at.success)
     at.text_input(key='tr_project').set_value('Test Project').run()
     assert not at.exception, at.exception
-    assert any('2610_2708_Test_Project' in m.value for m in at.markdown)
+    assert not any('Worksheet:' in m.value for m in at.markdown)
+    assert any(m.label == 'Time allocated' for m in at.metric) or any('Unknown Project' in e.value for e in at.error) or any('no key check' in c.value for c in at.caption)
     at.selectbox(key='tr_obsmode').set_value('Deep').run()
     assert not at.exception, at.exception
     assert at.selectbox(key='tr_deepmode').value == 'g'
