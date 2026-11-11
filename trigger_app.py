@@ -360,7 +360,7 @@ def visibility_plots_cached(key: tuple, cons: dict, night, targets: tuple):
     return vis.plot_visibility_interactive(results, site, mark_time=False), vis.plot_monthly_interactive(m, site, show_max_alt=False)
 
 
-def helper_section(norm: list, om, cfg: dict, hours: float | None):
+def helper_section(norm: list, om, cfg: dict, hours: float | None, tt: dict | None):
     st.header('Helper plots')
     targets = tuple((r['objname'] or f'row {i}', float(r['RA_deg']), float(r['De_deg'])) for i, r in enumerate(norm, start=1) if r.get('RA_deg') is not None)
     site, cons = cfg['site'], cfg['constraints']
@@ -385,10 +385,9 @@ def helper_section(norm: list, om, cfg: dict, hours: float | None):
                 st.plotly_chart(fig_night, width='stretch', config={'displaylogo': False}, key='tr_vis_plot')
                 st.plotly_chart(fig_month, width='stretch', config={'displaylogo': False}, key='tr_month_plot')
     with c_time, st.expander('Total observation time', expanded=True):
-        if om is None:
+        if om is None or tt is None:
             st.caption('Choose an observation mode first.')
         else:
-            tt = trigger.total_time(norm, om)
             st.metric('Targets with exposure and frames', tt['n_targets'])
             st.metric('Total exposure (per unit)', overhead.format_duration(tt['exposure_s']), help='exposure time x frames x filters per unit, summed over the targets')
             st.metric('Total observation time', overhead.format_duration(tt['total_s']), help='exposure plus every overhead below')
@@ -401,8 +400,6 @@ def helper_section(norm: list, om, cfg: dict, hours: float | None):
                     st.error(f'The request needs {tt["total_s"] / 3600:.1f} h but the project has {hours:g} h allocated.')
             else:
                 st.caption('No allocation known for this project.')
-            return hours is not None and tt['total_s'] > hours * 3600
-    return False
 
 
 def preview_section(formatted: list, issues: list):
@@ -431,8 +428,10 @@ def preview_section(formatted: list, issues: list):
         st.success(f'{len(formatted)} target(s) ready.' + (f' {len(warnings)} warning(s).' if warnings else ''))
 
 
-def submit_section(formatted: list, errors: list, ts: trigger.TriggerSettings, project: str, project_ok: bool, over_allocation: bool):
+def submit_section(formatted: list, errors: list, ts: trigger.TriggerSettings, project: str, project_ok: bool, over_allocation: bool, tt: dict | None, hours: float | None):
     ss = st.session_state
+    if over_allocation and tt is not None:
+        st.error(f'The request needs {tt["total_s"] / 3600:.1f} h of observation time but the project has {hours:g} h allocated.')
     key_path = sheets.service_account_key_path()
     name = ts.worksheet_name(project) if trigger.safe_project_id(project) else ''
     replace = bool(ss.get('tr_replace')) and ss.get('tr_loaded_for') == trigger.safe_project_id(project)
@@ -481,9 +480,11 @@ def main():
     defaults, om = settings_section(ts, cfg)
     edited = targets_section(ts, rtype)
     norm, formatted, issues = validate(edited, ts, defaults, cfg, project, survey=(rtype == 'Survey'))
-    over = helper_section(norm, om, cfg, hours)
+    tt = trigger.total_time(norm, om) if om is not None else None
+    over = bool(tt and hours is not None and tt['total_s'] > hours * 3600)
     preview_section(formatted, issues)
-    submit_section(formatted, [i for i in issues if i.level == 'error'], ts, project, ok, over)
+    submit_section(formatted, [i for i in issues if i.level == 'error'], ts, project, ok, over, tt, hours)
+    helper_section(norm, om, cfg, hours, tt)
 
 
 if __name__ == '__main__':

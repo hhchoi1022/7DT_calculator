@@ -91,8 +91,8 @@ def test_trigger_page_renders():
     assert not at.exception, at.exception
     assert at.selectbox(key='tr_deepmode').value == 'g'
     assert any('Binning 1, gain 2750 and priority 50 are fixed' in c.value for c in at.caption)
-    assert [h.value for h in at.header][-1] == 'Request preview'      # the preview sits below the helper plots
-    assert any('Helper plots' == h.value for h in at.header)
+    headers = [h.value for h in at.header]
+    assert headers.index('Request preview') < headers.index('Helper plots') and headers[-1] == 'Helper plots'
     at.radio(key='tr_type').set_value('Survey').run()                   # survey: tile IDs, coordinates from the tiles
     assert not at.exception, at.exception
     assert at.session_state['tr_rows'].columns.tolist() == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']
