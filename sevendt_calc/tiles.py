@@ -296,6 +296,7 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
     extent = extent or max(1.6, m.radius_deg * 1.4 + 0.9)
     fig = go.Figure()
     tid_to_center = {}
+    plain_x, plain_y = [], []                                   # unmatched, untouched tiles: one light trace (fast to draw)
     for tid, poly in m.polygons.items():
         x, y = poly.exterior.xy
         x, y = list(x), list(y)
@@ -303,6 +304,12 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
         tid_to_center[tid] = (cx, cy)
         t = matched.get(tid)
         thick = 1.5 if clickable else 1.0                       # clickable maps: every outline heavier, like buttons
+        if clickable and t is None and tid not in added:
+            plain_x += x + [None]
+            plain_y += y + [None]
+            if abs(cx) < extent and abs(cy) < extent:
+                fig.add_annotation(x=cx, y=cy, text=tid, showarrow=False, font=dict(size=9, color='rgba(31,119,180,0.9)'))
+            continue
         if t is not None and tid in excluded:
             color, fill, width, label_color = 'rgba(120,120,120,0.9)', 'rgba(120,120,120,0.15)', 2.0 * thick, '#666666'
         elif t is None and tid in added:
@@ -323,12 +330,19 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
                 label = f'<b>{tid}</b>' + ('<br>excluded' if tid in excluded else ('' if t.contains_target or t.overlap_fraction is None else f'<br>{100 * t.overlap_fraction:.0f} %'))
             fig.add_annotation(x=cx, y=cy, text=label, showarrow=False, font=dict(size=9 if t is None else 10, color=label_color))
     if clickable:
+        if plain_x:
+            fig.add_trace(go.Scatter(x=plain_x, y=plain_y, mode='lines', line=dict(color='rgba(31,119,180,0.8)', width=1.2 * thick), fill='toself',
+                                     fillcolor='rgba(31,119,180,0.10)', hoverinfo='skip', showlegend=False, name='nearby tiles'))
         ids = [tid for tid, (cx, cy) in tid_to_center.items() if abs(cx) < extent and abs(cy) < extent]
         colors = ['rgba(120,120,120,0.9)' if i in excluded else ('rgba(44,160,44,0.95)' if i in added else ('rgba(214,39,40,0.95)' if i in matched else 'rgba(31,119,180,0.85)')) for i in ids]
-        actions = ['click to include again' if (i in excluded or (i not in matched and i not in added)) else 'click to exclude' for i in ids]
-        fig.add_trace(go.Scatter(x=[tid_to_center[i][0] for i in ids], y=[tid_to_center[i][1] + 0.22 for i in ids], mode='markers', customdata=ids, text=actions,
-                                 marker=dict(size=16, symbol='circle', color='rgba(255,255,255,0.9)', line=dict(width=2.5, color=colors)),
+        actions = ['click to include' if (i in excluded or (i not in matched and i not in added)) else 'click to exclude' for i in ids]
+        # one big, almost transparent square per tile makes the whole tile body a click target; the small circle shows the state
+        fig.add_trace(go.Scatter(x=[tid_to_center[i][0] for i in ids], y=[tid_to_center[i][1] for i in ids], mode='markers', customdata=ids, text=actions,
+                                 marker=dict(size=84, symbol='square', color='rgba(255,255,255,0.02)', line=dict(width=0)),
                                  name='tiles', showlegend=False, hovertemplate='<b>%{customdata}</b>: %{text}<extra></extra>'))
+        fig.add_trace(go.Scatter(x=[tid_to_center[i][0] for i in ids], y=[tid_to_center[i][1] + 0.22 for i in ids], mode='markers',
+                                 marker=dict(size=14, symbol='circle', color='rgba(255,255,255,0.9)', line=dict(width=2.5, color=colors)),
+                                 name='state', showlegend=False, hoverinfo='skip'))
     if m.ellipse is not None and m.shape is not None:
         bx, by = m.shape.exterior.xy
         a, b, pa = m.ellipse
@@ -349,7 +363,7 @@ def plot_tile_match_interactive(m: TileMatch, extent: float | None = None, exclu
         xaxis=dict(title='East offset [deg]', range=[extent, -extent], zeroline=False, gridcolor='#e6e6e6', constrain='domain'),
         yaxis=dict(title='North offset [deg]', range=[-extent, extent], zeroline=False, gridcolor='#e6e6e6', scaleanchor='x', scaleratio=1),
         plot_bgcolor='white', height=520, margin=dict(l=50, r=20, t=70, b=50), hovermode='closest',
-        clickmode='event+select' if clickable else 'event', dragmode='pan' if clickable else 'zoom')
+        clickmode='event+select' if clickable else 'event', dragmode='pan' if clickable else 'zoom', hoverdistance=60 if clickable else -1)
     return fig
 
 
