@@ -229,7 +229,7 @@ def tile_matcher_dialog(ts: trigger.TriggerSettings):
     excluded, added = ss.setdefault('tm_excluded', set()), ss.setdefault('tm_added', set())
     chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
     summary = st.empty()
-    st.caption('Click the circle on a tile to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
+    st.caption('Click anywhere on a tile to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
     ver = ss.get('tm_plot_ver', 0)
     state = ss.get(f'tm_plot_{ver}')                               # the click of the previous run, applied before the chart is drawn
     points = (state or {}).get('selection', {}).get('points', []) if isinstance(state, dict) else []
