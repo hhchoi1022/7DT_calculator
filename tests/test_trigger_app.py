@@ -42,6 +42,9 @@ def test_validation_rules():
         {'objname': 'date', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3', 'obs_startdate': '11/11/2026'},
         {'objname': 'noexp', 'RA': '1', 'De': '2'},                                            # exposure time and frames missing
         {'objname': 'list', 'RA': '1', 'De': '2', 'exptime': '100,100', 'count': '3,3'},         # lists are not accepted
+        {'objname': 'GRB 260901A', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'},        # a space in the name
+        {'objname': 'SN_2026abc', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'},         # an underscore
+        {'objname': 'AT2026-xyz', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'},         # '-' is allowed
     ]
     norm, issues = trigger.validate_rows(rows, ts, defaults, cfg)
     by_row = {}
@@ -56,6 +59,7 @@ def test_validation_rules():
     assert ('obs_startdate', 'error') in by_row[7]
     assert ('exptime', 'error') in by_row[8] and ('count', 'error') in by_row[8]
     assert ('exptime', 'error') in by_row[9] and ('count', 'error') in by_row[9]
+    assert ('objname', 'error') in by_row[10] and ('objname', 'error') in by_row[11] and 12 not in by_row
     assert trigger.REQUIRED == ('objname', 'RA', 'De', 'exptime', 'count')
     formatted = trigger.format_rows(norm, 'My Project', ts)
     assert formatted[0]['exptime'] == '100' and formatted[0]['count'] == '3' and formatted[0]['RA'] == '10.500000'

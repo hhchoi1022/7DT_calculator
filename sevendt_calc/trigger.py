@@ -20,6 +20,7 @@ from .tiles import normalise_tile_id, tile_centre
 
 TRIGGER_JSON = DATA_DIR / 'trigger.json'
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
+OBJNAME_PATTERN = re.compile(r'^[A-Za-z0-9-]+$')      # the only symbol allowed in an object name is '-'
 DATE_EXAMPLE = '2026-11-11T00:00:00'
 
 
@@ -33,7 +34,7 @@ class Field:
 
 
 FIELDS = (
-    Field('objname', 'Object name', True, ('name', 'object', 'target', 'obj', 'id', 'source', 'objectname', 'targetname'), 'up to 100 characters'),
+    Field('objname', 'Object name', True, ('name', 'object', 'target', 'obj', 'id', 'source', 'objectname', 'targetname'), 'letters, digits and - only, up to 100 characters'),
     Field('RA', 'Right Ascension (hh:mm:ss.s or deg)', True, ('ra', 'raj2000', 'ra_deg', 'alpha', 'right ascension', 'ra(deg)', 'ra_hms')),
     Field('De', 'Declination (±dd:mm:ss or deg)', True, ('de', 'dec', 'decj2000', 'dec_deg', 'delta', 'declination', 'dec(deg)', 'dec_dms')),
     Field('obsmode', 'Observation mode', False, ('mode', 'observation mode', 'obs_mode')),
@@ -247,11 +248,14 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
             row[f.name] = str(v).strip() if not _blank(v) else str(defaults.get(f.name, '') if not _blank(defaults.get(f.name)) else '')
         err = lambda fld, msg: issues.append(Issue(i, fld, 'error', msg))
         warn = lambda fld, msg: issues.append(Issue(i, fld, 'warning', msg))
-        # object name
+        # object name: letters, digits and '-' only
         if not row['objname']:
             err('objname', 'required')
         elif len(row['objname']) > 100:
             err('objname', f'{len(row["objname"])} characters (maximum 100)')
+        elif not OBJNAME_PATTERN.match(row['objname']):
+            bad = sorted({c for c in row['objname'] if not (c.isalnum() and c.isascii()) and c != '-'})
+            err('objname', 'letters, digits and - only (no spaces or other symbols): ' + ' '.join(repr(c) for c in bad))
         # coordinates (survey: the object name is a 7DS tile and the coordinates are the tile centre)
         row['RA_deg'] = row['De_deg'] = None
         if survey:

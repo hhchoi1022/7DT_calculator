@@ -24,7 +24,7 @@ EDITOR_COLUMNS = {'Target': ['objname', 'RA', 'De', 'exptime', 'count', 'obs_sta
 EXAMPLE_ROWS = {'Target': [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6', 'exptime': '100', 'count': '3'}],
                 'Survey': [{'objname': 'T01022', 'exptime': '100', 'count': '3'}, {'objname': 'T01023', 'exptime': '100', 'count': '3'}]}
 HELP = {
-    'objname': 'Target name, up to 100 characters. Survey request: the 7DS tile ID, e.g. T01022 (the coordinates are the tile centre).',
+    'objname': 'Target name: letters, digits and - only (no spaces or other symbols), up to 100 characters, e.g. NGC0253 or SN2026abc. Survey request: the 7DS tile ID, e.g. T01022.',
     'RA': 'Right ascension: hh:mm:ss.s (e.g. 00:47:33.12) or degrees (e.g. 11.888).',
     'De': 'Declination: ±dd:mm:ss (e.g. -25:17:17.6) or degrees (e.g. -25.288).',
     'exptime': 'Exposure time per frame in seconds, one number; standard 100, 180 at most. Applied to every filter of the mode.',
