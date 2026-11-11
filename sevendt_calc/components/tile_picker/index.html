@@ -7,6 +7,8 @@
   body { margin: 0; font-family: "Source Sans Pro", sans-serif; color: #31333F; }
   #status { font-size: 14px; margin: 2px 0 4px 4px; }
   #status b { font-weight: 600; }
+  .annotation-text, .annotation { pointer-events: none; }   /* tile labels never swallow a click */
+  #plot .nsewdrag { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -48,11 +50,43 @@ function updateStatus() {
   if (state.added.size) parts.push(`${state.added.size} added`);
   document.getElementById('status').innerHTML = parts.join(' · ') + ' — click a tile to exclude or add it, click again to undo';
 }
-function publish() { setValue({excluded: Array.from(state.excluded).sort(), added: Array.from(state.added).sort(), chosen: chosen()}); }
+let publishTimer = null;
+function publish() {                                   // send the whole selection once the clicks settle (fewer reruns, last state wins)
+  if (publishTimer) clearTimeout(publishTimer);
+  publishTimer = setTimeout(() => { publishTimer = null;
+    setValue({excluded: Array.from(state.excluded).sort(), added: Array.from(state.added).sort(), chosen: chosen(), n: Date.now()}); }, 250);
+}
+function pointInPolygon(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function tileAt(x, y, polys, centers) {               // the tile under a data-space point; overlaps resolved by the nearest centre
+  let best = null, bestD = Infinity;
+  for (const tid of state.ids) {
+    if (!pointInPolygon(x, y, polys[tid])) continue;
+    const c = centers[tid], d = (c[0] - x) ** 2 + (c[1] - y) ** 2;
+    if (d < bestD) { bestD = d; best = tid; }
+  }
+  return best;
+}
+function toggle(gd, tid) {
+  const inf = state.info[tid];
+  if (inf.matched) { if (state.excluded.has(tid)) state.excluded.delete(tid); else state.excluded.add(tid); }
+  else { if (state.added.has(tid)) state.added.delete(tid); else state.added.add(tid); }
+  const st = styleOf(tid); const i = state.ids.indexOf(tid);
+  Plotly.restyle(gd, {fillcolor: st.fill, 'line.color': st.line, 'line.width': st.width}, [i]);
+  Plotly.relayout(gd, {[`annotations[${i}].text`]: labelOf(tid), [`annotations[${i}].font.color`]: st.label});
+  updateStatus();
+  publish();
+}
 
 function draw(args) {
   const gd = document.getElementById('plot');
-  state = {ids: args.ids, info: args.info, excluded: new Set(args.excluded || []), added: new Set(args.added || [])};
+  state = {ids: args.ids, info: args.info, polys: args.polys, centers: args.centers, excluded: new Set(args.excluded || []), added: new Set(args.added || [])};
   const traces = [], annotations = [];
   state.ids.forEach((tid, i) => {
     const poly = args.polys[tid]; const st = styleOf(tid);
@@ -71,20 +105,25 @@ function draw(args) {
     yaxis: {title: 'North offset [deg]', range: [-e, e], zeroline: false, gridcolor: '#e6e6e6', scaleanchor: 'x', scaleratio: 1},
     plot_bgcolor: 'white', height: 540, margin: {l: 50, r: 20, t: 50, b: 50}, hovermode: 'closest', dragmode: 'pan', hoverdistance: 40,
   };
-  Plotly.newPlot(gd, traces, layout, {displaylogo: false, scrollZoom: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d']});
-  gd.on('plotly_click', ev => {
-    if (!ev.points || !ev.points.length) return;
-    const tid = state.ids[ev.points[0].curveNumber];
-    if (tid === undefined) return;
-    const inf = state.info[tid];
-    if (inf.matched) { if (state.excluded.has(tid)) state.excluded.delete(tid); else state.excluded.add(tid); }
-    else { if (state.added.has(tid)) state.added.delete(tid); else state.added.add(tid); }
-    const st = styleOf(tid); const i = state.ids.indexOf(tid);
-    Plotly.restyle(gd, {fillcolor: st.fill, 'line.color': st.line, 'line.width': st.width}, [i]);
-    Plotly.relayout(gd, {[`annotations[${i}].text`]: labelOf(tid), [`annotations[${i}].font.color`]: st.label});
-    updateStatus();
-    publish();
-  });
+  Plotly.newPlot(gd, traces, layout, {displaylogo: false, scrollZoom: true, responsive: true, doubleClick: false, modeBarButtonsToRemove: ['select2d', 'lasso2d']});
+  // Clicks are resolved from the pixel position (not from Plotly's hover state, which lags behind the pointer and
+  // ignores clicks on labels): a press and release within a few pixels toggles the tile under the pointer.
+  // Plotly's drag layer moves the pointer onto a full-window cover on mousedown, so the release is caught on the
+  // document (capture phase) and matched with a press that started inside the plot.
+  if (!window._tileHandlers) {
+    window._tileHandlers = true;
+    let down = null;
+    document.addEventListener('mousedown', e => { down = gd.contains(e.target) ? [e.clientX, e.clientY] : null; }, true);
+    document.addEventListener('mouseup', e => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+      if (moved > 5 || !state || !gd._fullLayout) return;
+      const fl = gd._fullLayout, bb = gd.getBoundingClientRect();
+      const x = fl.xaxis.p2d(e.clientX - bb.left - fl.xaxis._offset), y = fl.yaxis.p2d(e.clientY - bb.top - fl.yaxis._offset);
+      const tid = tileAt(x, y, state.polys, state.centers);
+      if (tid) toggle(gd, tid);
+    }, true);
+  }
   updateStatus();
   setHeight(document.body.scrollHeight + 10);
 }
