@@ -33,6 +33,20 @@ HELP = {
     'obs_enddate': 'Optional. Latest UTC date of the observation, typed as YYYY-MM-DD (e.g. 2026-12-01) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
 }
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
+# JS regular expressions checked by the editor while a cell is typed (a non-matching value is shown red and not committed)
+VALIDATE = {
+    'objname': r'^[A-Za-z0-9-]{1,100}$',
+    'RA': r'^\s*([+-]?\d{1,3}(\.\d*)?|\d{1,2}[:h\s]\s*\d{1,2}[:m\s]\s*\d{1,2}(\.\d*)?s?)\s*$',
+    'De': r'^\s*([+-]?\d{1,2}(\.\d*)?|[+-]?\d{1,2}[:d\s]\s*\d{1,2}[:m\s]\s*\d{1,2}(\.\d*)?s?)\s*$',
+    'exptime': r'^\s*\d+(\.\d*)?\s*$',
+    'count': r'^\s*\d+\s*$',
+    'obs_startdate': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
+    'obs_enddate': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
+}
+FORMAT_GUIDE = {
+    'objname': 'letters, digits, -', 'RA': 'hh:mm:ss.s or deg', 'De': '±dd:mm:ss or deg', 'exptime': 'seconds, 180 at most',
+    'count': 'whole number', 'obs_startdate': 'YYYY-MM-DD', 'obs_enddate': 'YYYY-MM-DD',
+}
 PLOT_LIMIT = 10                      # targets drawn in the visibility plots by default (the table covers all of them)
 
 
@@ -294,12 +308,14 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
         columns_help(rtype)
     with left:
         base = ss['tr_rows']
+        st.caption('Formats: ' + ' · '.join(f'**{trigger.LABELS[c].split(" (")[0]}** {FORMAT_GUIDE[c]}' for c in base.columns)
+                   + '. A value in the wrong format turns red while typing and is not accepted; hover a column header for details.')
         col_cfg = {}
         for c in base.columns:
             # Only the object name is marked required in the editor: the editor withholds a new row until its required
             # cells are filled, so marking the other columns would make such rows vanish when the table is redrawn.
             # Dates are plain text (YYYY-MM-DD): the calendar editor did not accept typed dates.
-            col_cfg[c] = st.column_config.TextColumn(trigger.LABELS[c], help=HELP[c], required=(c == 'objname'))
+            col_cfg[c] = st.column_config.TextColumn(trigger.LABELS[c], help=HELP[c], required=(c == 'objname'), validate=VALIDATE.get(c))
         edited = st.data_editor(base, num_rows='dynamic', hide_index=False, width='stretch', column_config=col_cfg, key=f'tr_editor_{ss["tr_version"]}')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')
         if rtype == 'Target':
