@@ -71,7 +71,9 @@ sevendt_calc/            core package, no Streamlit imports
   tiles.py               7DS tile catalogue (data/final_tiles.txt), tile matching, tile-ID lookup, Plotly maps
   modebuild.py           mode builder core: validation, JSON export in TCSpy layout, padding, add/remove helpers
   trigger.py             observation requests: spreadsheet columns, upload parsing + column aliases, validation, row formatting
-  sheets.py              Google Sheets append (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
+  sheets.py              Google Sheets read / append / replace (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
+  components/tile_picker/index.html   browser-side tile map (Plotly.js, plain HTML + JS, no build step): clicks toggle tiles locally,
+                         only the selection is sent back (Streamlit component protocol by hand); wrapper ui_common.tile_picker()
   modeplot.py            observation-mode figure (transmission curves + unit x order grid), matplotlib and Plotly
 ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers

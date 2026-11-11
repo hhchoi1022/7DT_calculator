@@ -13,7 +13,7 @@ from astropy.time import Time
 from sevendt_calc import config, overhead, sheets, tiles, trigger
 from sevendt_calc import visibility as vis
 from sevendt_calc.targets import Target, parse_coordinates, resolve_name
-from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, site_key, styled_rows
+from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, site_key, styled_rows, tile_picker
 
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
@@ -227,27 +227,16 @@ def tile_matcher_dialog(ts: trigger.TriggerSettings):
     if m is None:
         return
     excluded, added = ss.setdefault('tm_excluded', set()), ss.setdefault('tm_added', set())
-    chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
-    summary = st.empty()
     st.caption('Click anywhere on a tile to exclude it (grey) or to add a neighbouring tile (green); click again to undo. Drag to pan, scroll to zoom.')
-    ver = ss.get('tm_plot_ver', 0)
-    state = ss.get(f'tm_plot_{ver}')                               # the click of the previous run, applied before the chart is drawn
-    points = (state or {}).get('selection', {}).get('points', []) if isinstance(state, dict) else []
-    clicked = {p.get('customdata') for p in points if p.get('customdata')}
-    if clicked:
+    value = tile_picker(m, excluded, added, key=f'tm_picker_{ss.get("tm_plot_ver", 0)}')
+    if isinstance(value, dict):                                   # the browser keeps the map; only the selection comes back
         matched_ids = {t.id for t in m.tiles}
-        for tid in clicked:
-            if tid in matched_ids:
-                excluded.symmetric_difference_update({tid})
-            else:
-                added.symmetric_difference_update({tid})
-        ver = ss['tm_plot_ver'] = ver + 1                          # a fresh chart: the next click starts from no selection
-        chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
-    fig = tiles.plot_tile_match_interactive(m, excluded=excluded, added=added, clickable=True)
-    st.plotly_chart(fig, width='stretch', config={'displaylogo': False, 'scrollZoom': True}, on_select='rerun', selection_mode='points', key=f'tm_plot_{ver}')
-    summary.markdown(f'**{len(chosen)} tile(s) selected** around RA {m.ra:.4f}, Dec {m.dec:+.4f}'
-                     + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°')
-                     + (f' ({len(excluded)} excluded)' if excluded else '') + (f' ({len(added)} added)' if added else ''))
+        ss['tm_excluded'] = excluded = {t for t in value.get('excluded', []) if t in matched_ids}
+        ss['tm_added'] = added = {t for t in value.get('added', []) if t not in matched_ids}
+    chosen = [t.id for t in m.tiles if t.id not in excluded] + sorted(added)
+    st.markdown(f'**{len(chosen)} tile(s) selected** around RA {m.ra:.4f}, Dec {m.dec:+.4f}'
+                + (f', radius {m.radius_deg:g}°' if m.ellipse is None else f', ellipse {m.ellipse[0]:g}° x {m.ellipse[1]:g}°, PA {m.ellipse[2]:g}°')
+                + (f' ({len(excluded)} excluded)' if excluded else '') + (f' ({len(added)} added)' if added else ''))
     if chosen:
         rows = [t.row() for t in m.tiles if t.id in chosen] + [{'tile': tid, 'ra_center': float(get_tiles().ra[get_tiles()._index[tid]]), 'dec_center': float(get_tiles().dec[get_tiles()._index[tid]]), 'tile_fraction_in_circle': None} for tid in sorted(added)]
         table = pd.DataFrame(rows)[['tile', 'ra_center', 'dec_center', 'tile_fraction_in_circle']].rename(columns={'tile_fraction_in_circle': 'fraction inside the area'})
@@ -313,7 +302,7 @@ def targets_section(ts: trigger.TriggerSettings, rtype: str) -> pd.DataFrame:
             # Only the object name is marked required in the editor: the editor withholds a new row until its required
             # cells are filled, so marking the other columns would make such rows vanish when the table is redrawn.
             # Dates are plain text (YYYY-MM-DD): the calendar editor did not accept typed dates.
-            col_cfg[c] = st.column_config.TextColumn(f'{trigger.LABELS[c]} ❔', help=f'{HELP[c]} Format: {FORMAT_GUIDE[c]}.',
+            col_cfg[c] = st.column_config.TextColumn(f'{trigger.LABELS[c]} (?)', help=f'{HELP[c]} Format: {FORMAT_GUIDE[c]}.',
                                                      required=(c == 'objname'), validate=VALIDATE.get(c))
         edited = st.data_editor(base, num_rows='dynamic', hide_index=False, width='stretch', column_config=col_cfg, key=f'tr_editor_{ss["tr_version"]}')
         b1, b2 = st.columns([1.4, 3], vertical_alignment='center')

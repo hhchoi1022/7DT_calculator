@@ -518,3 +518,46 @@ def target_spectrum_box(uploads: list, prefix: str, sample: bytes | None = None,
                 c1.file_uploader(f'Spectrum file of {t.label}', type=SPECTRUM_FILE_TYPES, key=f'{prefix}_spec_{t.row}', label_visibility='collapsed')
                 c2.radio('Flux unit of the file', FLUX_UNIT_LABELS, key=f'{prefix}_spec_unit_{t.row}', label_visibility='collapsed')
             st.caption('A file chosen in a row overrides a bulk file. With a magnitude the file is scaled to it; without one its own flux is used.')
+
+
+# ------------------------------------------------------------------ tile picker (custom component)
+_TILE_PICKER = None
+
+
+def tile_picker(match, excluded=None, added=None, key: str = 'tile_picker'):
+    """
+    Clickable tile map drawn in the browser (Plotly.js): clicks toggle tiles locally and only the selection is sent back.
+    Returns {'excluded': [...], 'added': [...], 'chosen': [...]} after the first click, else None.
+    """
+    global _TILE_PICKER
+    import math
+    import streamlit.components.v1 as components
+    if _TILE_PICKER is None:
+        _TILE_PICKER = components.declare_component('tile_picker', path=str(Path(__file__).resolve().parent / 'sevendt_calc' / 'components' / 'tile_picker'))
+    matched = {t.id: t for t in match.tiles}
+    extent = max(1.6, match.radius_deg * 1.4 + 0.9)
+    ids, polys, centers, info = [], {}, {}, {}
+    for tid, poly in match.polygons.items():
+        cx, cy = poly.centroid.x, poly.centroid.y
+        if tid not in matched and not (abs(cx) < extent and abs(cy) < extent):
+            continue
+        t = matched.get(tid)
+        x, y = poly.exterior.xy
+        ids.append(tid)
+        polys[tid] = [[round(float(a), 5), round(float(b), 5)] for a, b in zip(x, y)]
+        centers[tid] = [round(float(cx), 5), round(float(cy), 5)]
+        if t is None:
+            hover = 'not matched: click to add'
+            info[tid] = {'matched': False, 'nearEdge': False, 'overlapText': '', 'hover': hover}
+        else:
+            overlap = '' if t.contains_target or t.overlap_fraction is None else f'{100 * t.overlap_fraction:.0f} %'
+            hover = ('contains the target' if t.contains_target else f'{overlap} of the tile inside the area') + '<br>click to exclude / include'
+            info[tid] = {'matched': True, 'nearEdge': bool(t.near_edge), 'overlapText': overlap, 'hover': hover}
+    shape = [[round(float(a), 5), round(float(b), 5)] for a, b in zip(*match.shape.exterior.xy)] if match.shape is not None else None
+    title = f'RA {match.ra:.4f}, Dec {match.dec:+.4f}'
+    if match.ellipse is not None:
+        title += f' — ellipse {match.ellipse[0]:g}° x {match.ellipse[1]:g}°, PA {match.ellipse[2]:g}°'
+    elif match.radius_deg > 0:
+        title += f' — radius {match.radius_deg:g}°'
+    return _TILE_PICKER(ids=ids, polys=polys, centers=centers, info=info, shape=shape, extent=extent, title=title,
+                        excluded=sorted(excluded or []), added=sorted(added or []), key=key, default=None)
