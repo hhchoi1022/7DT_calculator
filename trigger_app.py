@@ -89,8 +89,8 @@ def get_tiles() -> tiles.TileSet:
 def project_section(ts: trigger.TriggerSettings):
     st.header('Project')
     c1, c2, c3 = st.columns([1, 1, 1.6], vertical_alignment='center')
-    project = c1.text_input('Project ID', key='tr_project', placeholder='e.g. 26001',
-                            help='The 5-digit proposal number of the 7DS call for proposals (e.g. 26001), as given with your time allocation.')
+    project = c1.text_input('Project ID', key='tr_project', placeholder='e.g. 26035',
+                            help='The 5-digit proposal number of the 7DS call for proposals (e.g. 26035), as given with your time allocation.')
     key = c2.text_input('Project key', key='tr_key', type='password', help=f'Given with the time allocation. Lost it? Contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     projects = trigger.load_projects()
     ok, msg, hours = trigger.check_project(project, key, projects)
