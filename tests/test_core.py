@@ -307,3 +307,18 @@ def test_config_dir_from_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'settings', lambda: {'config_overlay': str(tmp_path)})
     monkeypatch.delenv('SEVENDT_CONFIG_OVERLAY', raising=False)
     assert config.overlay_dir() == tmp_path
+
+
+def test_observing_season():
+    from datetime import date
+    site = config.load_site(); cons = vis.Constraints.from_config()
+    grid = vis.season_grid(date(2026, 11, 12), site, cons, n_nights=366)
+    hours = vis.hours_above(grid, [11.888, 10.685, 80.894], [-25.288, 41.269, -69.756], 30.0)
+    assert hours.shape == (366, 3) and 5 < hours[0, 0] < 7.5 and hours[:, 1].max() == 0 and (hours[:, 2] > 0).sum() > 300
+    ngc = vis.observing_season(grid, 11.888, -25.288, 30.0)
+    assert ngc['observable_tonight'] and ngc['start'] == date(2026, 11, 12) and date(2027, 1, 1) < ngc['end'] < date(2027, 3, 1) and ngc['next_start'] is not None
+    m87 = vis.observing_season(grid, 187.706, 12.391, 30.0)
+    assert not m87['observable_tonight'] and date(2026, 12, 1) < m87['start'] < date(2027, 1, 31) and m87['end'] > m87['start']
+    assert vis.observing_season(grid, 37.95, 89.26, 30.0)['nights_per_year'] == 0
+    lmc = vis.observing_season(grid, 80.894, -69.756, 30.0)
+    assert lmc['observable_tonight'] and lmc['nights_per_year'] > 300 and lmc['end'] > lmc['start']   # a short gap around the shortest nights

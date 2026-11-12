@@ -13,7 +13,8 @@ from astropy.time import Time
 from sevendt_calc import config, overhead, sheets, tiles, trigger
 from sevendt_calc import visibility as vis
 from sevendt_calc.targets import Target, parse_coordinates, resolve_name
-from ui_common import FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, site_key, styled_rows, tile_picker
+from ui_common import (FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, season_rows,
+                       site_key, styled_rows, tile_picker, warm_season_grid)
 
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
@@ -406,6 +407,32 @@ def helper_section(norm: list, om, cfg: dict, hours: float | None, tt: dict | No
                 st.caption('No allocation known for this project.')
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def season_table_cached(key: tuple, sun_alt: float, min_alt: float, day, targets: tuple) -> pd.DataFrame:
+    site = config.Site(*key)
+    cons = vis.Constraints(min_alt=min_alt, sun_alt=sun_alt)
+    return pd.DataFrame(season_rows(site, cons, targets, min_alt))
+
+
+def season_section(norm: list, cfg: dict):
+    """When each target rises above and drops below the altitude limit over the coming year (altitude only)."""
+    targets = tuple((r['objname'] or f'row {i}', float(r['RA_deg']), float(r['De_deg'])) for i, r in enumerate(norm, start=1) if r.get('RA_deg') is not None)
+    if not targets:
+        return
+    site, cons = cfg['site'], cfg['constraints']
+    from ui_common import coming_night_date
+    day = coming_night_date(site_key(site))
+    with st.spinner('Computing the observing seasons...'):
+        df = season_table_cached(site_key(site), cons.sun_alt, cons.min_alt, day, targets)
+    st.markdown(f'**Observing season** (altitude above {cons.min_alt:g}° between twilights; the Moon is not considered)')
+    df = df.rename(columns={'tonight_hours': f'tonight [h]', 'observable_from': 'observable from', 'until': 'until', 'next_season_from': 'next season from',
+                            'nights_per_year': 'nights / year', 'longest_night_hours': 'longest night [h]'})
+    css = pd.DataFrame('', index=df.index, columns=df.columns)
+    css['observable from'] = [RED if v == 'never above the limit' else '' for v in df['observable from']]
+    st.dataframe(df.style.apply(lambda _: css, axis=None), hide_index=True, width='stretch', height=min(35 * (len(df) + 1) + 3, 320),
+                 column_config={'tonight [h]': st.column_config.NumberColumn(format='%.1f'), 'longest night [h]': st.column_config.NumberColumn(format='%.1f')})
+
+
 def preview_section(formatted: list, issues: list):
     st.header('Request preview')
     if not formatted:
@@ -468,6 +495,8 @@ def main():
     cfg = live_config()
     ts = trigger.TriggerSettings.load()
     ss = st.session_state
+    from ui_common import coming_night_date
+    warm_season_grid(coming_night_date(site_key(cfg['site'])))
     project, ok, hours = project_section(ts)
     load_from_sheet(ts, project, ok)
     if ss.get('tr_loaded_note'):
@@ -484,6 +513,7 @@ def main():
     defaults, om = settings_section(ts, cfg)
     edited = targets_section(ts, rtype)
     norm, formatted, issues = validate(edited, ts, defaults, cfg, project, survey=(rtype == 'Survey'))
+    season_section(norm, cfg)
     tt = trigger.total_time(norm, om) if om is not None else None
     over = bool(tt and hours is not None and tt['total_s'] > hours * 3600)
     preview_section(formatted, issues)

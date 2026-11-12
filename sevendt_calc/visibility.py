@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import astropy.units as u
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import math
 import numpy as np
 from astroplan import Observer
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body, get_sun
@@ -616,3 +617,84 @@ def night_summary(r: VisibilityResult) -> dict:
             'max_alt_time_utc': r.max_alt_time.iso[:16] if r.max_alt_time is not None else '',
             'moon_sep_deg': f'{sep_night.min():.0f}-{sep_night.max():.0f}', 'moon_illumination': round(r.moon_illumination, 2),
             'note': reason}
+
+
+# ------------------------------------------------------------------ observing season (altitude only, a year of nights)
+SIDEREAL_DEG_PER_HOUR = 360.0 / 23.9344696
+
+
+@dataclass
+class SeasonGrid:
+    """Twilight times and sidereal times of consecutive nights, target-independent (built once per site and year)."""
+    dates: list
+    start_jd: np.ndarray        # evening twilight [JD]
+    end_jd: np.ndarray          # morning twilight [JD]
+    lst_start_deg: np.ndarray   # local sidereal time at evening twilight
+    latitude: float
+
+
+def season_grid(start_night: date, site: Site | None = None, constraints: Constraints | None = None, n_nights: int = 366) -> SeasonGrid:
+    site = site or load_site()
+    constraints = constraints or Constraints.from_config()
+    observer = make_observer(site)
+    tz = ZoneInfo(site.timezone)
+    dates = [start_night + timedelta(days=i) for i in range(n_nights)]
+    noons = Time([datetime.combine(d, dtime(12, 0), tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None) for d in dates])
+    evening = observer.sun_set_time(noons, which='next', horizon=constraints.sun_alt * u.deg, n_grid_points=60)
+    morning = observer.sun_rise_time(evening, which='next', horizon=constraints.sun_alt * u.deg, n_grid_points=60)
+    lst = observer.local_sidereal_time(evening).deg
+    return SeasonGrid(dates=dates, start_jd=np.asarray(evening.jd, float), end_jd=np.asarray(morning.jd, float),
+                      lst_start_deg=np.asarray(lst, float), latitude=site.latitude)
+
+
+def hours_above(grid: SeasonGrid, ra_deg, dec_deg, min_alt: float = 30.0) -> np.ndarray:
+    """
+    Hours per night (rows: nights, columns: targets) during which the target is above `min_alt`, from the
+    hour-angle limit of the altitude and the night's span in sidereal time (no refraction, no Moon).
+    """
+    ra = np.atleast_1d(np.asarray(ra_deg, float)); dec = np.radians(np.atleast_1d(np.asarray(dec_deg, float)))
+    phi = math.radians(grid.latitude)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos_h0 = (math.sin(math.radians(min_alt)) - math.sin(phi) * np.sin(dec)) / (math.cos(phi) * np.cos(dec))
+    h0 = np.degrees(np.arccos(np.clip(cos_h0, -1.0, 1.0)))                     # half-width of the window above min_alt [deg]
+    h0 = np.where(cos_h0 >= 1.0, 0.0, np.where(cos_h0 <= -1.0, 180.0, h0))
+    span = (grid.end_jd - grid.start_jd) * 24.0 * SIDEREAL_DEG_PER_HOUR          # night length in sidereal degrees
+    h_start = (grid.lst_start_deg[:, None] - ra[None, :] + 180.0) % 360.0 - 180.0   # hour angle at evening twilight, (-180, 180]
+    h_end = h_start + span[:, None]
+    total = np.zeros_like(h_start)
+    for k in (-1, 0, 1, 2):                                                     # windows around the transits reachable during the night
+        lo = np.maximum(h_start, -h0[None, :] + 360.0 * k)
+        hi = np.minimum(h_end, h0[None, :] + 360.0 * k)
+        total += np.clip(hi - lo, 0.0, None)
+    return total / SIDEREAL_DEG_PER_HOUR
+
+
+def observing_season(grid: SeasonGrid, ra_deg: float, dec_deg: float, min_alt: float = 30.0, min_hours: float = 0.5) -> dict:
+    """
+    When a target is observable (at least `min_hours` above `min_alt` during the night) over the grid's year,
+    seen from its first night: the current or next run of observable nights, its end, and the number of
+    observable nights in the year.
+    """
+    hours = hours_above(grid, [ra_deg], [dec_deg], min_alt)[:, 0]
+    ok = hours >= min_hours
+    n_nights = int(ok.sum())
+    out = {'observable_tonight': bool(ok[0]), 'nights_per_year': n_nights, 'hours_tonight': float(hours[0]),
+           'max_hours': float(hours.max()), 'start': None, 'end': None, 'next_start': None}
+    if n_nights == 0:
+        return out
+    if ok.all():
+        out['start'], out['end'] = grid.dates[0], grid.dates[-1]
+        out['always'] = True
+        return out
+    idx = np.flatnonzero(ok)
+    if ok[0]:                                                        # observable now: the run ends at the first gap
+        gap = np.flatnonzero(~ok)[0]
+        out['start'], out['end'] = grid.dates[0], grid.dates[gap - 1]
+        later = idx[idx > gap]
+        out['next_start'] = grid.dates[later[0]] if later.size else None
+    else:                                                            # not yet: the next run
+        first = idx[0]
+        gap_after = np.flatnonzero(~ok[first:])
+        last = first + gap_after[0] - 1 if gap_after.size else len(ok) - 1
+        out['start'], out['end'] = grid.dates[first], grid.dates[last]
+    return out

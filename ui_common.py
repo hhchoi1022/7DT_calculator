@@ -561,3 +561,62 @@ def tile_picker(match, excluded=None, added=None, key: str = 'tile_picker'):
         title += f' — radius {match.radius_deg:g}°'
     return _TILE_PICKER(ids=ids, polys=polys, centers=centers, info=info, shape=shape, extent=extent, title=title,
                         excluded=sorted(excluded or []), added=sorted(added or []), key=key, default=None)
+
+
+# ------------------------------------------------------------------ observing season (a year of twilights, built once per day)
+_SEASON_GRIDS: dict = {}
+_SEASON_LOCK = threading.Lock() if 'threading' in dir() else None
+
+
+def season_grid_for(site, cons, start_night) -> 'vis.SeasonGrid':
+    """The year-long twilight grid for the site from `start_night`, computed once per server and day (about 7 s)."""
+    import threading as _threading
+    global _SEASON_LOCK
+    if _SEASON_LOCK is None:
+        _SEASON_LOCK = _threading.Lock()
+    key = (site_key(site), cons.sun_alt, start_night)
+    grid = _SEASON_GRIDS.get(key)
+    if grid is not None:
+        return grid
+    with _SEASON_LOCK:
+        grid = _SEASON_GRIDS.get(key)
+        if grid is None:
+            grid = vis.season_grid(start_night, site, cons)
+            _SEASON_GRIDS.clear()
+            _SEASON_GRIDS[key] = grid
+    return grid
+
+
+@st.cache_resource(show_spinner=False)
+def warm_season_grid(day) -> bool:
+    """Build today's season grid in a background thread at start-up so the first visitor does not wait."""
+    import threading as _threading
+
+    def work():
+        try:
+            cfg = live_config.__wrapped__() if hasattr(live_config, '__wrapped__') else live_config()
+            season_grid_for(cfg['site'], cfg['constraints'], coming_night_date(site_key(cfg['site'])))
+        except Exception:
+            pass
+
+    _threading.Thread(target=work, name='season-grid-warmup', daemon=True).start()
+    return True
+
+
+def season_rows(site, cons, targets, min_alt: float | None = None) -> list:
+    """One row per (name, ra, dec): tonight's hours above the altitude limit and the observable season (altitude only)."""
+    start = coming_night_date(site_key(site))
+    grid = season_grid_for(site, cons, start)
+    limit = cons.min_alt if min_alt is None else min_alt
+    rows = []
+    for name, ra, dec in targets:
+        s = vis.observing_season(grid, ra, dec, limit)
+        if s['nights_per_year'] == 0:
+            season, until, nxt = 'never above the limit', '', ''
+        elif s.get('always'):
+            season, until, nxt = 'all year', '', ''
+        else:
+            season = f'{s["start"]:%Y-%m-%d}'; until = f'{s["end"]:%Y-%m-%d}'; nxt = f'{s["next_start"]:%Y-%m-%d}' if s['next_start'] else ''
+        rows.append({'target': name, 'tonight_hours': round(s['hours_tonight'], 1), 'observable_from': season, 'until': until,
+                     'next_season_from': nxt, 'nights_per_year': s['nights_per_year'], 'longest_night_hours': round(s['max_hours'], 1)})
+    return rows
