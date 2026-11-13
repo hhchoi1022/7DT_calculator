@@ -391,18 +391,24 @@ def load_projects(path: Path | str = PROJECTS_JSON) -> dict | None:
 
 def check_project(project_id: str, key: str, projects: dict | None) -> tuple[bool, str, float | None]:
     """(accepted, message, allocated hours). Without a project list every ID is accepted."""
+    ok, msg, hours, _ = check_project_entry(project_id, key, projects)
+    return ok, msg, hours
+
+
+def check_project_entry(project_id: str, key: str, projects: dict | None) -> tuple[bool, str, float | None, dict | None]:
+    """Like check_project, plus the project's entry (observation type, mode, sky background, ...) when accepted."""
     pid = safe_project_id(project_id)
     if not pid:
-        return False, 'Enter the Project ID.', None
+        return False, 'Enter the Project ID.', None, None
     if projects is None:
-        return True, 'Project list not configured on this server: no key check.', None
+        return True, 'Project list not configured on this server: no key check.', None, None
     entry = projects.get(pid)
     if entry is None:
-        return False, f'Unknown Project ID {pid}.', None
+        return False, f'Unknown Project ID {pid}.', None, None
     if str(entry.get('key', '')) != str(key or ''):
-        return False, 'The Project key does not match.', None
+        return False, 'The Project key does not match.', None, None
     hours = entry.get('allocated_hours')
-    return True, 'Project recognised.', float(hours) if hours is not None else None
+    return True, 'Project recognised.', float(hours) if hours is not None else None, {k: v for k, v in entry.items() if k != 'key'}
 
 
 def total_time(rows: list, obsmode, config=None) -> dict:

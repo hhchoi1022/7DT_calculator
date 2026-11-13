@@ -1,5 +1,5 @@
 {
-  "_description": "Copy to data/projects.json (git-ignored) on the server. Project ID -> submission key and allocated telescope time in hours. Keys are checked on the Observation request page; the allocation bounds the total observation time of a request.",
-  "GRB_followup": {"key": "change-me", "allocated_hours": 30},
-  "IMS": {"key": "change-me-too", "allocated_hours": 120}
+  "_description": "Copy to data/projects.json (git-ignored) on the server. Project ID -> submission key, allocated telescope time in hours and the proposal's observation type (Target / ToO / Survey), mode and sky background; the page shows them and uses them as defaults.",
+  "26001": {"key": "change-me", "allocated_hours": 50, "pi": "Example PI", "affiliation": "KAS", "observation": "Target", "mode": "Spec", "sky_background": "Any", "subject": "ISM & Star Formation"},
+  "26007": {"key": "change-me-too", "allocated_hours": 152.3, "pi": "Example PI", "affiliation": "KASI", "observation": "Survey", "mode": "Spec", "sky_background": "Dark & Gray", "subject": "Survey"}
 }

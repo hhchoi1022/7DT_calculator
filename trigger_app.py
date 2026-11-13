@@ -108,15 +108,26 @@ def project_section(ts: trigger.TriggerSettings):
                             help='The 5-digit proposal number of the 7DS call for proposals (e.g. 26035), as given with your time allocation.')
     key = c2.text_input('Project key', key='tr_key', type='password', help=f'Given with the time allocation. Lost it? Contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     projects = trigger.load_projects()
-    ok, msg, hours = trigger.check_project(project, key, projects)
+    ok, msg, hours, entry = trigger.check_project_entry(project, key, projects)
     if not trigger.safe_project_id(project):
         c3.caption('The Project ID is required before submitting.')
     elif ok and hours is not None:
         c3.metric('Time allocated', f'{hours:g} h', help='Total observation time of the project for this period, overheads included.')
+        if entry:
+            parts = [f'{entry.get("observation", "")} request'.strip(), entry.get('mode', ''), f'sky: {entry.get("sky_background", "")}' if entry.get('sky_background') else '']
+            c3.caption('Proposal: ' + ' · '.join(x for x in parts if x) + (f' — {entry["pi"]}' if entry.get('pi') else ''))
     elif ok:
         c3.caption(msg)
     else:
         c3.error(msg)
+    # the proposal's request type and mode become the page defaults once, when the project is first recognised
+    ss = st.session_state
+    pid = trigger.safe_project_id(project)
+    if ok and entry and ss.get('tr_defaults_for') != pid:
+        ss['tr_defaults_for'] = pid
+        ss['tr_type_pending'] = 'Survey' if entry.get('observation') == 'Survey' else 'Target'
+        if entry.get('mode') in ts.obsmodes:
+            ss['tr_obsmode_pending'] = entry['mode']
     return project, ok, hours
 
 

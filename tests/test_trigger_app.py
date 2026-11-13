@@ -116,6 +116,8 @@ def test_survey_rows_and_projects(tmp_path):
     projects = trigger.load_projects(f)
     assert projects == {'GRB_followup': {'key': 'abc', 'allocated_hours': 30}}
     assert trigger.check_project('GRB followup', 'abc', projects) == (True, 'Project recognised.', 30.0)
+    ok, _, hours, entry = trigger.check_project_entry('GRB followup', 'abc', projects)
+    assert ok and hours == 30.0 and 'key' not in entry and entry['allocated_hours'] == 30
     assert trigger.check_project('GRB followup', 'nope', projects)[0] is False and trigger.check_project('other', '', projects)[0] is False
     assert trigger.check_project('anything', '', None)[0] is True and trigger.load_projects(tmp_path / 'missing.json') is None
 
