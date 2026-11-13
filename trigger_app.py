@@ -120,11 +120,10 @@ def project_section(ts: trigger.TriggerSettings):
         c3.caption(msg)
     else:
         c3.error(msg)
-    # the proposal's request type and mode become the page defaults once, when the project is first recognised
+    # a recognised proposal fixes the request type and the observation mode (the sub-mode stays free)
     ss = st.session_state
-    pid = trigger.safe_project_id(project)
-    if ok and entry and ss.get('tr_defaults_for') != pid:
-        ss['tr_defaults_for'] = pid
+    ss['tr_entry'] = entry if ok else None
+    if ok and entry:
         ss['tr_type_pending'] = 'Survey' if entry.get('observation') == 'Survey' else 'Target'
         if entry.get('mode') in ts.obsmodes:
             ss['tr_obsmode_pending'] = entry['mode']
@@ -172,9 +171,13 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
     if 'tr_obsmode_pending' in ss:
         ss['tr_obsmode'] = ss.pop('tr_obsmode_pending')
     pending = ss.pop('tr_submode_pending', None)
-    c1, c2 = st.columns([1, 2])
-    obsmode = c1.selectbox('Observation mode', list(ts.obsmodes), key='tr_obsmode',
-                           help='Spec and Color use every active telescope and start only when all of them are idle.')
+    entry = ss.get('tr_entry') or {}
+    mode_locked = entry.get('mode') in ts.obsmodes
+    c1, c2, c3 = st.columns([1, 2, 1])
+    obsmode = c1.selectbox('Observation mode', list(ts.obsmodes), key='tr_obsmode', disabled=mode_locked,
+                           help=('Fixed by the proposal.' if mode_locked else 'Spec and Color use every active telescope and start only when all of them are idle.'))
+    c3.text_input('Sky Background', value=entry.get('sky_background') or ('—' if not entry else 'Any'), disabled=True, key='tr_sky',
+                  help='Lunar phase granted to the proposal (Dark, Dark & Gray or Any), from the allocation.')
     if pending and pending[0] == obsmode and pending[1]:
         ss[{'Spec': 'tr_specmode', 'Color': 'tr_colormode', 'Deep': 'tr_deepmode'}[obsmode]] = pending[1]
     if obsmode == 'Spec':
@@ -519,8 +522,10 @@ def main():
             st.rerun()
     if 'tr_type_pending' in ss:
         ss['tr_type'] = ss.pop('tr_type_pending')
-    rtype = st.radio('Request type', list(REQUEST_TYPES), horizontal=True, key='tr_type',
-                     help='Target: your own positions. Survey: 7DS tiles (object name = tile ID), coordinates fixed to the tile centres.')
+    entry = ss.get('tr_entry') or {}
+    type_locked = bool(entry.get('observation'))
+    rtype = st.radio('Request type', list(REQUEST_TYPES), horizontal=True, key='tr_type', disabled=type_locked,
+                     help=('Fixed by the proposal.' if type_locked else 'Target: your own positions. Survey: 7DS tiles (object name = tile ID), coordinates fixed to the tile centres.'))
     defaults, om = settings_section(ts, cfg)
     edited = targets_section(ts, rtype)
     norm, formatted, issues = validate(edited, ts, defaults, cfg, project, survey=(rtype == 'Survey'))
