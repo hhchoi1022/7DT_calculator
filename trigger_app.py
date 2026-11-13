@@ -176,7 +176,8 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
     c1, c2, c3 = st.columns([1, 2, 1])
     obsmode = c1.selectbox('Observation mode', list(ts.obsmodes), key='tr_obsmode', disabled=mode_locked,
                            help=('Fixed by the proposal.' if mode_locked else 'Spec and Color use every active telescope and start only when all of them are idle.'))
-    c3.text_input('Sky Background', value=entry.get('sky_background') or ('—' if not entry else 'Any'), disabled=True, key='tr_sky',
+    sky = entry.get('sky_background') or ('Any' if entry else '—')
+    c3.text_input('Sky Background', value=sky, disabled=True, key=f'tr_sky_{sky}',          # keyed by value: a disabled widget keeps its first value otherwise
                   help='Lunar phase granted to the proposal (Dark, Dark & Gray or Any), from the allocation.')
     if pending and pending[0] == obsmode and pending[1]:
         ss[{'Spec': 'tr_specmode', 'Color': 'tr_colormode', 'Deep': 'tr_deepmode'}[obsmode]] = pending[1]
