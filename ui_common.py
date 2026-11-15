@@ -620,3 +620,20 @@ def season_rows(site, cons, targets, min_alt: float | None = None) -> list:
         rows.append({'target': name, 'tonight_hours': round(s['hours_tonight'], 1), 'observable_from': season, 'until': until,
                      'next_season_from': nxt, 'nights_per_year': s['nights_per_year'], 'longest_night_hours': round(s['max_hours'], 1)})
     return rows
+
+
+# ------------------------------------------------------------------ live text input (custom component)
+_LIVE_INPUT = None
+
+
+def live_text_input(label: str, key: str, placeholder: str = '', help: str = '', password: bool = False) -> str:
+    """A text field that reports its value while typing (after a short pause, on paste, Enter or blur): no Enter needed."""
+    global _LIVE_INPUT
+    import streamlit.components.v1 as components
+    if _LIVE_INPUT is None:
+        _LIVE_INPUT = components.declare_component('live_input', path=str(Path(__file__).resolve().parent / 'sevendt_calc' / 'components' / 'live_input'))
+    current = st.session_state.get(f'{key}_value', '')
+    value = _LIVE_INPUT(label=label, value=current, placeholder=placeholder, help=help, password=password, key=key, default=current)
+    value = '' if value is None else str(value)
+    st.session_state[f'{key}_value'] = value
+    return value

@@ -13,8 +13,8 @@ from astropy.time import Time
 from sevendt_calc import config, overhead, sheets, tiles, trigger
 from sevendt_calc import visibility as vis
 from sevendt_calc.targets import Target, parse_coordinates, resolve_name
-from ui_common import (FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, night_date_input, night_midpoint_utc, obsmode_png, season_rows,
-                       site_key, styled_rows, tile_picker, warm_season_grid)
+from ui_common import (FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config, live_text_input, night_date_input, night_midpoint_utc, obsmode_png,
+                       season_rows, site_key, styled_rows, tile_picker, warm_season_grid)
 
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
@@ -104,9 +104,11 @@ def get_tiles() -> tiles.TileSet:
 def project_section(ts: trigger.TriggerSettings):
     st.header('Project')
     c1, c2, c3 = st.columns([1, 1, 1.6], vertical_alignment='center')
-    project = c1.text_input('Project ID', key='tr_project', placeholder='e.g. 26035',
-                            help='The 5-digit proposal number of the 7DS call for proposals (e.g. 26035), as given with your time allocation.')
-    key = c2.text_input('Project key', key='tr_key', type='password', help=f'Given with the time allocation. Lost it? Contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
+    with c1:
+        project = live_text_input('Project ID', key='tr_project', placeholder='e.g. 26035',
+                                  help='The 5-digit proposal number of the 7DS call for proposals (e.g. 26035), as given with your time allocation.')
+    with c2:
+        key = live_text_input('Project key', key='tr_key', password=True, help=f'Given with the time allocation. Lost it? Contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
     projects = trigger.load_projects()
     ok, msg, hours, entry = trigger.check_project_entry(project, key, projects)
     if not trigger.safe_project_id(project):
