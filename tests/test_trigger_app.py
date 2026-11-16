@@ -23,7 +23,7 @@ def test_read_table_formats():
     sample = trigger.read_table(trigger.sample_file(), 'sample.csv')
     assert list(sample.columns) == list(trigger.FILE_COLUMNS) and list(sample['objname']) == ['NGC0253', 'M31']
     survey = trigger.read_table(trigger.sample_file('Survey'), 'survey.csv')
-    assert list(survey.columns) == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate'] and list(survey['objname']) == ['T01022', 'T01023']
+    assert list(survey.columns) == ['objname', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)'] and list(survey['objname']) == ['T01022', 'T01023']
     applied = trigger.apply_mapping(tsv, {**mapping, 'mystery': 'count'})
     assert list(applied.columns) == ['objname', 'RA', 'De', 'count'] and applied.iloc[0]['count'] == 'x'
 
@@ -36,10 +36,10 @@ def test_validation_rules():
         {'objname': 'good', 'RA': '10.5', 'De': '-20.25', 'exptime': '100', 'count': '3'},
         {'objname': '', 'RA': 'abc', 'De': '-20', 'exptime': '100', 'count': '3'},             # missing name, bad RA
         {'objname': 'x' * 101, 'RA': '1', 'De': '2', 'exptime': '200', 'count': '3'},         # too long, exptime above max
-        {'objname': 'warn', 'RA': '1', 'De': '2', 'exptime': '60', 'count': '2', 'obs_startdate': '2026-11-11T00:00:00', 'obs_enddate': '2026-11-01'},
+        {'objname': 'warn', 'RA': '1', 'De': '2', 'exptime': '60', 'count': '2', 'Fixed_window(Start)': '2026-11-11T00:00:00', 'Fixed_window(End)': '2026-11-01'},
         {'objname': 'deep', 'RA': '1', 'De': '2', 'obsmode': 'deep', 'filter_': 'r', 'exptime': '100', 'count': '3', 'binning': '2', 'gain': '4030'},
         {'objname': 'nomode', 'RA': '1', 'De': '2', 'obsmode': 'Deep', 'exptime': '100', 'count': '3'},
-        {'objname': 'date', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3', 'obs_startdate': '11/11/2026'},
+        {'objname': 'date', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3', 'Fixed_window(Start)': '11/11/2026'},
         {'objname': 'noexp', 'RA': '1', 'De': '2'},                                            # exposure time and frames missing
         {'objname': 'list', 'RA': '1', 'De': '2', 'exptime': '100,100', 'count': '3,3'},         # lists are not accepted
         {'objname': 'GRB 260901A', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'},        # a space in the name
@@ -53,10 +53,10 @@ def test_validation_rules():
     assert 1 not in by_row and norm[0]['exptime_s'] == 100.0 and norm[0]['count_n'] == 3
     assert ('objname', 'error') in by_row[2] and ('RA', 'error') in by_row[2]
     assert ('objname', 'error') in by_row[3] and ('exptime', 'error') in by_row[3]
-    assert ('exptime', 'warning') in by_row[4] and ('obs_enddate', 'error') in by_row[4]
+    assert ('exptime', 'warning') in by_row[4] and ('Fixed_window(End)', 'error') in by_row[4]
     assert 5 not in by_row and norm[4]['obsmode'] == 'Deep' and norm[4]['binning'] == '2' and norm[4]['gain'] == '4030'
     assert ('filter_', 'error') in by_row[6]
-    assert ('obs_startdate', 'error') in by_row[7]
+    assert ('Fixed_window(Start)', 'error') in by_row[7]
     assert ('exptime', 'error') in by_row[8] and ('count', 'error') in by_row[8]
     assert ('exptime', 'error') in by_row[9] and ('count', 'error') in by_row[9]
     assert ('objname', 'error') in by_row[10] and ('objname', 'error') in by_row[11] and 12 not in by_row
@@ -95,7 +95,7 @@ def test_trigger_page_renders():
     assert headers.index('Request preview') < headers.index('Helper plots') and headers[-1] == 'Helper plots'
     at.radio(key='tr_type').set_value('Survey').run()                   # survey: tile IDs, coordinates from the tiles
     assert not at.exception, at.exception
-    assert at.session_state['tr_rows'].columns.tolist() == ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']
+    assert at.session_state['tr_rows'].columns.tolist() == ['objname', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)']
     assert list(at.session_state['tr_rows']['objname']) == ['T01022', 'T01023']   # the survey examples replace the target examples
     assert any('2 target(s) ready' in s.value for s in at.success)
     assert any('Overhead details' in m.value for m in at.markdown)
@@ -137,3 +137,10 @@ def test_ellipse_tile_match():
     markers = [t for t in fig2.data if t.name == 'tiles']
     assert len(markers) == 1 and first in list(markers[0].customdata) and fig2.layout.clickmode == 'event+select'
     assert any('excluded' in (a.text or '') for a in fig2.layout.annotations)
+
+
+def test_legacy_date_columns_still_recognised():
+    df = trigger.read_table(b'objname,ra,dec,exptime,count,obs_startdate,obs_enddate\nA,1,2,100,3,2026-11-11,\n', 'old.csv')
+    mapping, unknown = trigger.recognise_columns(df.columns)
+    assert mapping['obs_startdate'] == 'Fixed_window(Start)' and mapping['obs_enddate'] == 'Fixed_window(End)' and not unknown
+    assert trigger.SHEET_COLUMNS[9:11] == ('Fixed_window(Start)', 'Fixed_window(End)')

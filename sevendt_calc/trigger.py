@@ -43,8 +43,8 @@ FIELDS = (
     Field('filter_', 'Deepmode / filter', False, ('filter', 'filters', 'deepmode', 'deep mode', 'band')),
     Field('exptime', 'Exposure time per frame [s]', True, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one number, 180 s at most (standard 100)'),
     Field('count', 'Frames per filter', True, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one whole number (standard 3)'),
-    Field('obs_startdate', 'Start date (Optional)', False, ('obs_starttime', 'start', 'startdate', 'start_date', 'obs_start', 'starttime'), f'UTC, e.g. {DATE_EXAMPLE}'),
-    Field('obs_enddate', 'End date (Optional)', False, ('obs_endtime', 'end', 'enddate', 'end_date', 'obs_end', 'endtime'), 'UTC, e.g. 2026-12-01T00:00:00'),
+    Field('Fixed_window(Start)', 'Fixed_window(Start)', False, ('obs_startdate', 'obs_starttime', 'start', 'startdate', 'start_date', 'obs_start', 'starttime', 'fixed_window_start', 'fixedwindowstart', 'window_start'), f'optional, UTC, e.g. {DATE_EXAMPLE}'),
+    Field('Fixed_window(End)', 'Fixed_window(End)', False, ('obs_enddate', 'obs_endtime', 'end', 'enddate', 'end_date', 'obs_end', 'endtime', 'fixed_window_end', 'fixedwindowend', 'window_end'), 'optional, UTC, e.g. 2026-12-01T00:00:00'),
     Field('binning', 'Binning', False, ('bin',)),
     Field('gain', 'Gain', False, ('egain',)),
     Field('priority', 'Priority', False, ('prio',)),
@@ -52,7 +52,7 @@ FIELDS = (
 FIELD_BY_NAME = {f.name: f for f in FIELDS}
 REQUIRED = tuple(f.name for f in FIELDS if f.required)
 SHORT_LABELS = {'objname': 'Object name', 'RA': 'RA', 'De': 'Dec', 'exptime': 'Exposure time', 'count': 'Frames'}
-FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate')   # the columns a request file / the table may carry
+FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)')   # the columns a request file / the table may carry
 HIDDEN_COLUMNS = ('note', 'comment', 'weight', 'is_ToO', 'is_rapidToO', 'objtype')
 SHEET_COLUMNS = tuple(f.name for f in FIELDS) + HIDDEN_COLUMNS
 LABELS = {f.name: f.label for f in FIELDS}
@@ -233,7 +233,7 @@ def _blank(value) -> bool:
 def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: dict | None = None, survey: bool = False) -> tuple[list, list]:
     """
     rows: dicts with spreadsheet column names (strings as typed); blank cells take `defaults` (the page's
-    observation settings: obsmode, specmode, colormode, filter_, exptime, count, obs_startdate, obs_enddate,
+    observation settings: obsmode, specmode, colormode, filter_, exptime, count, Fixed_window(Start), Fixed_window(End),
     binning, gain). Returns (normalised rows, issues). A normalised row carries RA_deg / De_deg and the
     exptime / count lists next to the text values.
     """
@@ -319,14 +319,14 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
             err('count', 'must be at least 1')
         # dates
         dates = {}
-        for fld in ('obs_startdate', 'obs_enddate'):
+        for fld in ('Fixed_window(Start)', 'Fixed_window(End)'):
             d, e = parse_date(row[fld])
             dates[fld] = d
             if e:
                 err(fld, e)
             row[fld] = d.strftime(DATE_FORMAT) if d else ''
-        if dates['obs_startdate'] and dates['obs_enddate'] and dates['obs_enddate'] <= dates['obs_startdate']:
-            err('obs_enddate', 'must be after the start')
+        if dates['Fixed_window(Start)'] and dates['Fixed_window(End)'] and dates['Fixed_window(End)'] <= dates['Fixed_window(Start)']:
+            err('Fixed_window(End)', 'must be after the start')
         # binning, gain, priority
         for fld, default, minimum in (('binning', settings.default_binning, 1), ('gain', settings.default_gain, 0)):
             text = row[fld] or str(default)
@@ -355,7 +355,7 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
             'obsmode': r['obsmode'], 'specmode': r['specmode'] or 'None', 'colormode': r['colormode'] or 'None', 'filter_': r['filter_'] or 'None',
             'exptime': f'{r["exptime_s"]:g}' if r.get('exptime_s') is not None else r['exptime'],
             'count': str(r['count_n']) if r.get('count_n') is not None else r['count'],
-            'obs_startdate': r['obs_startdate'] or 'None', 'obs_enddate': r['obs_enddate'] or 'None',
+            'Fixed_window(Start)': r['Fixed_window(Start)'] or 'None', 'Fixed_window(End)': r['Fixed_window(End)'] or 'None',
             'binning': r['binning'], 'gain': r['gain'], 'priority': r['priority'],
         }
         hidden = dict(settings.hidden)
@@ -368,10 +368,10 @@ def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
 
 def sample_file(kind: str = 'Target') -> bytes:
     if kind == 'Survey':
-        return (b'objname,exptime,count,obs_startdate,obs_enddate\n'
+        return (b'objname,exptime,count,Fixed_window(Start),Fixed_window(End)\n'
                 b'T01022,100,3,,\n'
                 b'T01023,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
-    return (b'objname,RA,De,exptime,count,obs_startdate,obs_enddate\n'
+    return (b'objname,RA,De,exptime,count,Fixed_window(Start),Fixed_window(End)\n'
             b'NGC0253,00:47:33.12,-25:17:17.6,100,3,,\n'
             b'M31,10.68471,+41.26875,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
 

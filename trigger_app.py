@@ -19,9 +19,9 @@ from ui_common import (FEEDBACK_EMAIL, FEEDBACK_NAME, feedback_note, live_config
 st.set_page_config(page_title='7DT Observation request', page_icon='📝', layout='wide')
 
 REQUEST_TYPES = ('Target', 'Survey')
-DATE_COLUMNS = ('obs_startdate', 'obs_enddate')
-EDITOR_COLUMNS = {'Target': ['objname', 'RA', 'De', 'exptime', 'count', 'obs_startdate', 'obs_enddate'],
-                  'Survey': ['objname', 'exptime', 'count', 'obs_startdate', 'obs_enddate']}
+DATE_COLUMNS = ('Fixed_window(Start)', 'Fixed_window(End)')
+EDITOR_COLUMNS = {'Target': ['objname', 'RA', 'De', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)'],
+                  'Survey': ['objname', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)']}
 EXAMPLE_ROWS = {'Target': [{'objname': 'NGC0253', 'RA': '00:47:33.12', 'De': '-25:17:17.6', 'exptime': '100', 'count': '3'}],
                 'Survey': [{'objname': 'T01022', 'exptime': '100', 'count': '3'}, {'objname': 'T01023', 'exptime': '100', 'count': '3'}]}
 HELP = {
@@ -30,8 +30,8 @@ HELP = {
     'De': 'Declination: ±dd:mm:ss (e.g. -25:17:17.6) or degrees (e.g. -25.288).',
     'exptime': 'Exposure time per frame in seconds, one number; standard 100, 180 at most. Applied to every filter of the mode.',
     'count': 'Number of frames per filter, a whole number; standard 3.',
-    'obs_startdate': 'Optional. Earliest UTC date of the observation, typed as YYYY-MM-DD (e.g. 2026-11-11) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
-    'obs_enddate': 'Optional. Latest UTC date of the observation, typed as YYYY-MM-DD (e.g. 2026-12-01) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
+    'Fixed_window(Start)': 'Optional. Start of a fixed observing window in UTC, typed as YYYY-MM-DD (e.g. 2026-11-11) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
+    'Fixed_window(End)': 'Optional. End of a fixed observing window in UTC, typed as YYYY-MM-DD (e.g. 2026-12-01) or YYYY-MM-DDTHH:MM:SS; press Enter to confirm.',
 }
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 # JS regular expressions checked by the editor while a cell is typed (a non-matching value is shown red and not committed)
@@ -41,12 +41,12 @@ VALIDATE = {
     'De': r'^\s*([+-]?\d{1,2}(\.\d*)?|[+-]?\d{1,2}[:d\s]\s*\d{1,2}[:m\s]\s*\d{1,2}(\.\d*)?s?)\s*$',
     'exptime': r'^\s*\d+(\.\d*)?\s*$',
     'count': r'^\s*\d+\s*$',
-    'obs_startdate': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
-    'obs_enddate': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
+    'Fixed_window(Start)': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
+    'Fixed_window(End)': r'^$|^\s*\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?\s*$',
 }
 FORMAT_GUIDE = {
     'objname': 'letters, digits, -', 'RA': 'hh:mm:ss.s or deg', 'De': '±dd:mm:ss or deg', 'exptime': 'seconds, 180 at most',
-    'count': 'whole number', 'obs_startdate': 'YYYY-MM-DD', 'obs_enddate': 'YYYY-MM-DD',
+    'count': 'whole number', 'Fixed_window(Start)': 'YYYY-MM-DD (UTC)', 'Fixed_window(End)': 'YYYY-MM-DD (UTC)',
 }
 PLOT_LIMIT = 10                      # targets drawn in the visibility plots by default (the table covers all of them)
 
@@ -161,7 +161,8 @@ def load_from_sheet(ts: trigger.TriggerSettings, project: str, ok: bool):
         ss['tr_obsmode_pending'] = mode
         sub = {'Spec': first.get('specmode', ''), 'Color': first.get('colormode', ''), 'Deep': first.get('filter_', '')}.get(mode, '')
         ss['tr_submode_pending'] = (mode, sub)
-    cleaned = [{c: ('' if str(r.get(c, '')).strip() == 'None' else r.get(c, '')) for c in EDITOR_COLUMNS[rtype]} for r in rows]
+    legacy = {'Fixed_window(Start)': 'obs_startdate', 'Fixed_window(End)': 'obs_enddate'}     # worksheets written before the rename
+    cleaned = [{c: ('' if str(r.get(c, r.get(legacy.get(c, ''), ''))).strip() == 'None' else r.get(c, r.get(legacy.get(c, ''), ''))) for c in EDITOR_COLUMNS[rtype]} for r in rows]
     _remount(_frame(cleaned, EDITOR_COLUMNS[rtype]))
     ss['tr_loaded_note'] = f'{len(rows)} row(s) loaded from worksheet {ts.worksheet_name(pid)}; submitting replaces them.'
 
@@ -197,7 +198,7 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
             st.image(obsmode_png(om.mode, om.submode, tuple((u, tuple(f)) for u, f in om.filters_by_unit.items())), width='stretch')
     binning, gain = int(ts.default_binning), int(ts.default_gain)
     st.caption(f'Binning {binning}, gain {gain} and priority {ts.priority} are fixed by the observatory. To change the gain, contact {FEEDBACK_NAME} ({FEEDBACK_EMAIL}).')
-    defaults = {'obsmode': obsmode, sub_field: submode, 'binning': str(binning), 'gain': str(gain), 'obs_startdate': '', 'obs_enddate': ''}
+    defaults = {'obsmode': obsmode, sub_field: submode, 'binning': str(binning), 'gain': str(gain), 'Fixed_window(Start)': '', 'Fixed_window(End)': ''}
     return defaults, om
 
 
