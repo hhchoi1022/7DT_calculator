@@ -187,7 +187,7 @@ def settings_section(ts: trigger.TriggerSettings, cfg: dict):
     if obsmode == 'Spec':
         sub_field, submode = 'specmode', c2.selectbox('Specmode', ts.spec_options(cfg['specmodes']), key='tr_specmode')
     elif obsmode == 'Color':
-        sub_field, submode = 'colormode', c2.selectbox('Colormode', list(ts.colormodes), key='tr_colormode')
+        sub_field, submode = 'colormode', c2.selectbox('Colormode', ts.color_options(cfg['colormodes']), key='tr_colormode')
     else:
         sub_field, submode = 'filter_', c2.selectbox('Deepmode', list(ts.deepmodes), key='tr_deepmode')
     if obsmode in ('Spec', 'Color'):

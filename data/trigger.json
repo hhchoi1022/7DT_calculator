@@ -1,5 +1,5 @@
 {
-  "_description": "Settings of the Observation request page (trigger_app.py). Rows are appended to the worksheet '<period>_<Project ID>' of spreadsheet_url. specmodes null = the public Spec list (data/public_modes.json). Exposure times above max_exptime are errors, any value other than default_exptime is a warning. hidden: columns written with fixed values (comment = the Project ID). The Google service-account key is found through data/settings.json (google_service_account_key), the GOOGLE_APPLICATION_CREDENTIALS variable or TCSpy's googleSheet.config.",
+  "_description": "Settings of the Observation request page (trigger_app.py). Rows are appended to the worksheet '<period>_<Project ID>' of spreadsheet_url. specmodes / colormodes null = the public lists of data/public_modes.json, i.e. the files of the TCSpy mode folders. Exposure times above max_exptime are errors, any value other than default_exptime is a warning. hidden: columns written with fixed values (comment = the Project ID). The Google service-account key is found through data/settings.json (google_service_account_key), the GOOGLE_APPLICATION_CREDENTIALS variable or TCSpy's googleSheet.config.",
   "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1UorU7P_UMr22Luw6q6GLQYk4-YicGRATwCePRxkx2Ms/edit",
   "period": "2610_2708",
   "obsmodes": [
@@ -8,12 +8,7 @@
     "Deep"
   ],
   "specmodes": null,
-  "colormodes": [
-    "gr",
-    "ri",
-    "gi",
-    "gri"
-  ],
+  "colormodes": null,
   "deepmodes": [
     "g",
     "r",

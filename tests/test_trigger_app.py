@@ -144,3 +144,12 @@ def test_legacy_date_columns_still_recognised():
     mapping, unknown = trigger.recognise_columns(df.columns)
     assert mapping['obs_startdate'] == 'Fixed_window(Start)' and mapping['obs_enddate'] == 'Fixed_window(End)' and not unknown
     assert trigger.SHEET_COLUMNS[9:11] == ('Fixed_window(Start)', 'Fixed_window(End)')
+
+
+def test_colormodes_follow_the_folder():
+    ts = trigger.TriggerSettings.load()
+    cfg = _cfg()
+    assert ts.colormodes is None and ts.color_options(cfg['colormodes']) == config.public_submodes('Color', cfg['colormodes'])
+    assert 'gi' not in ts.color_options(cfg['colormodes']) and 'gri' in ts.color_options(cfg['colormodes'])
+    norm, issues = trigger.validate_rows([{'objname': 'A', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'}], ts, {'obsmode': 'Color', 'colormode': 'gi'}, cfg)
+    assert any(i.field == 'colormode' for i in issues)

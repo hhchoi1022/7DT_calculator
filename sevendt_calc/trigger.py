@@ -76,7 +76,7 @@ class TriggerSettings:
     period: str = ''
     obsmodes: tuple = ('Spec', 'Color', 'Deep', 'Single', 'Search')
     specmodes: tuple | None = None
-    colormodes: tuple = ('gr', 'ri', 'gi', 'gri')
+    colormodes: tuple | None = None            # None: the colormode files of the TCSpy folder (public list)
     deepmodes: tuple = ('g', 'r', 'i')
     default_exptime: float = 100.0
     max_exptime: float = 180.0
@@ -94,16 +94,22 @@ class TriggerSettings:
         for name in ('spreadsheet_url', 'period', 'default_exptime', 'max_exptime', 'default_count', 'default_binning', 'default_gain', 'priority', 'gain_table', 'hidden'):
             if name in raw:
                 kw[name] = raw[name]
-        for name in ('obsmodes', 'colormodes', 'deepmodes'):
+        for name in ('obsmodes', 'deepmodes'):
             if raw.get(name):
                 kw[name] = tuple(str(x) for x in raw[name])
         kw['specmodes'] = tuple(str(x) for x in raw['specmodes']) if raw.get('specmodes') else None
+        kw['colormodes'] = tuple(str(x) for x in raw['colormodes']) if raw.get('colormodes') else None
         return cls(**kw)
 
     def spec_options(self, specmodes: dict | None = None) -> list:
         if self.specmodes:
             return list(self.specmodes)
         return public_submodes('Spec', specmodes if specmodes is not None else load_specmodes())
+
+    def color_options(self, colormodes: dict | None = None) -> list:
+        if self.colormodes:
+            return list(self.colormodes)
+        return public_submodes('Color', colormodes if colormodes is not None else load_colormodes())
 
     def worksheet_name(self, project_id: str) -> str:
         return f'{self.period}_{safe_project_id(project_id)}'
@@ -289,8 +295,9 @@ def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: di
                 err('specmode', f'must be one of {", ".join(spec_options)}' if row['specmode'] else 'required for Spec')
             row['colormode'] = row['filter_'] = ''
         elif mode == 'Color':
-            if row['colormode'] not in settings.colormodes:
-                err('colormode', f'must be one of {", ".join(settings.colormodes)}' if row['colormode'] else 'required for Color')
+            color_options = settings.color_options((cfg or {}).get('colormodes'))
+            if row['colormode'] not in color_options:
+                err('colormode', f'must be one of {", ".join(color_options)}' if row['colormode'] else 'required for Color')
             row['specmode'] = row['filter_'] = ''
         elif mode == 'Deep':
             if row['filter_'] not in settings.deepmodes:
