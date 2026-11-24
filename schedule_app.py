@@ -435,7 +435,7 @@ def projects_table(requests: list, plans: dict, dates: list) -> pd.DataFrame:
         for p in on:
             placed |= p.placed
         nights = np.flatnonzero(placed)
-        over = req.allocated_hours is not None and planned > req.allocated_hours + 1e-6
+        over = req.allocated_hours is not None and planned > req.allocated_hours + 0.1          # a few minutes of rounding are not 'over'
         if not on:
             status = 'off'
         elif bad:
