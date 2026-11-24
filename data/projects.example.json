@@ -1,5 +1,6 @@
 {
-  "_description": "Copy to data/projects.json (git-ignored) on the server. Project ID -> submission key, allocated telescope time in hours and the proposal's observation type (Target / ToO / Survey), mode and sky background; the page shows them and uses them as defaults. dither_arcsec (optional) is shown by the Scheduling page (0 when absent).",
+  "_description": "Copy to data/projects.json (git-ignored) on the server. Project ID -> submission key, allocated telescope time in hours and the proposal's observation type (Target / ToO / Survey), mode and sky background; the page shows them and uses them as defaults. dither_arcsec (optional) is shown by the Scheduling page (0 when absent). _admin_key: the key that shows every programme on the schedule viewer page.",
+  "_admin_key": "change-me-admin",
   "26001": {"key": "change-me", "allocated_hours": 50, "pi": "Example PI", "affiliation": "KAS", "observation": "Target", "mode": "Spec", "sky_background": "Any", "subject": "ISM & Star Formation"},
   "26007": {"key": "change-me-too", "allocated_hours": 152.3, "pi": "Example PI", "affiliation": "KASI", "observation": "Survey", "mode": "Spec", "sky_background": "Dark & Gray", "subject": "Survey", "dither_arcsec": 60}
 }

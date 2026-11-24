@@ -448,6 +448,15 @@ def compute_times(req: RequestFile, cfg: dict | None = None, oh_config: oh.Overh
             t.issues.append(f'overhead not estimated: {exc}')
 
 
+def admin_key() -> str:
+    """The '_admin_key' of data/projects.json (shows every programme on the viewer page); '' when absent."""
+    from .trigger import PROJECTS_JSON
+    try:
+        return str(json.loads(Path(PROJECTS_JSON).read_text()).get('_admin_key') or '')
+    except (OSError, ValueError):
+        return ''
+
+
 def load_mapping(folder: Path | str) -> dict:
     path = Path(folder) / MAPPING_FILE
     if not path.is_file():

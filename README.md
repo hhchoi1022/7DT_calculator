@@ -19,6 +19,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
 | Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
+| Schedule viewer (PIs) | `plan_app.py` | `./run_plan.sh` | Read-only view of the saved schedule: with their Project ID and key a PI sees their own programme (summary, planned rows with assumed epoch nights, visibility of their targets, the operator's notes) and the other programmes only as anonymous "another programme has an epoch" marks; the admin key (`_admin_key` in `data/projects.json`) shows every programme like the operator's page without editing |
 | Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects and lists every requested target set in one editable table: the request (mode, exptime, frames, total with overhead, `dither_arcsec` per project, OBS_WINDOW) plus the operator's `obs_starttime`, `obs_endtime`, `count` (frames per epoch) and `target_epoch` (a target set can be split into parts with their own values); a list of rows that do not fit (not enough nights on which the target is up long enough, frames differing from the request), a per-project summary (requested / planned time against the allocation, first and last assumed epoch), an assumed automatic schedule (epochs placed load-balanced on feasible nights) and the nights on which assumed epochs compete for the same time of night; per project PI / request type / mode / sky background / allocation / planned time; visibility of any chosen targets (several projects at once): curves (max altitude or observable hours) with the assumed epochs as diamonds over one bar per chosen target (observable / at transit or >= 3 h / Moon unsuitable, the entered range and the requested OBS_WINDOW as lines, epochs as diamonds); a per-project, per-night strip chart with the assumed epochs; the schedule is saved next to the request files and exported as an observation list (fixed columns) to a Google Sheet worksheet or CSV |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
@@ -78,6 +79,7 @@ sevendt_calc/            core package, no Streamlit imports
   components/tile_picker/index.html   browser-side tile map (Plotly.js, plain HTML + JS, no build step): clicks toggle tiles locally,
                          only the selection is sent back (Streamlit component protocol by hand); wrapper ui_common.tile_picker()
   modeplot.py            observation-mode figure (transmission curves + unit x order grid), matplotlib and Plotly
+schedule_plots.py        shared by the two scheduling pages: cached programme data (season grid, Moon, requests, night tables, saved plans), the Plotly figures and the project summary table
 ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving, season_grid_for(),
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
@@ -194,7 +196,10 @@ never copy its contents into the repo (some files hold credentials). Mode files 
 - Mode builder: units across, wheel slots down, click to append (duplicates allowed), click an Order
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
-- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
+- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`, `pl_`).
+- The schedule viewer never writes anything and shows a PI only their own programme; the other programmes
+  are reduced to per-night "another programme has an epoch" marks (no names, no hours). It reads the
+  schedule the operator saved (`schedule.json`), so unsaved edits are invisible to PIs.
 - Scheduling page: the editable plan table comes first (`st.data_editor` with a key and fixed rows: in
   Streamlit 1.64 such an editor keeps its identity across pure value changes, so the input frame is rebuilt
   every run with live totals (Total exptime, With overhead) without losing edits or scroll; the key is
