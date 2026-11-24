@@ -82,7 +82,7 @@ ui_common.py             shared Streamlit pieces: live_config(), target table wi
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
 data/                    settings.json (configuration folder, sheet key, request folder), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
-Opentime/<period>/       Phase-2 request files (*.txt), optional mapping.json (file -> Project ID) and the saved schedule.json; git-ignored (PI e-mails)
+Opentime/<period>/       Phase-2 request files (*.txt), optional mapping.json (file -> Project ID), the saved schedule.json and backup/ (previous versions); git-ignored (PI e-mails)
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -163,7 +163,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   nearest feasible night within a third of the cadence, else the next one) and a chain shorter than
   target_epoch is a blocking issue. The conflict check packs each night pre-emptively, least slack first
   (`phase2.pack_night_slots`), and lists nights where an epoch gets more than a minute less than it needs.
-  The schedule is saved as `schedule.json` in the request folder (keys `project|target`, a list when split). Strip charts use
+  The schedule is saved as `schedule.json` in the request folder (keys `project|target`, a list when split;
+  each entry also carries the operator's `note`); every save first copies the previous file to
+  `backup/schedule_<save time>.json`. The PI's NOTE is shown as Requester_note. Strip charts use
   `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
   heatmap with a discrete colour scale with the assumed epochs as diamonds on the rows (category labels as y:
   numbers would add rows '0', '1', ...). The visibility figure has two panels: curves with epoch diamonds,

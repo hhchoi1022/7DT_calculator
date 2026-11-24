@@ -627,7 +627,7 @@ def target_rows(requests: list) -> list:
                          'RA (°)': None if t.ra is None else round(t.ra, 5), 'Dec (°)': None if t.dec is None else round(t.dec, 5),
                          'Exptime (s)': t.exptime, 'Frames': t.nframes, 'Orders': t.n_orders, 'Total exposure (s)': round(t.exposure_s, 1),
                          'Total exposure (h)': round(t.exposure_s / 3600.0, 2), 'With overhead (h)': round(t.total_s / 3600.0, 2),
-                         'dither_arcsec': req.dither_arcsec, 'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'Note': t.note,
+                         'dither_arcsec': req.dither_arcsec, 'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'Requester_note': t.note,
                          'Issues': '; '.join(t.issues), 'File': req.name})
     return rows
 
@@ -696,8 +696,10 @@ class TargetSettings:
     epochs: int                    # number of epochs (target_epoch)
     enabled: bool = True
     cadence: int = 0               # days between consecutive epochs (0: no constraint)
+    note: str = ''                 # the operator's own note for the row
 
     def __post_init__(self):
+        self.note = '' if self.note is None else str(self.note)
         self.start = as_datetime_list(self.start)
         self.end = as_datetime_list(self.end)
         if not self.start or not self.end:
@@ -735,14 +737,14 @@ class TargetSettings:
 
     def as_dict(self) -> dict:
         return {'obs_starttime': self.start_text, 'obs_endtime': self.end_text, 'count': int(self.count), 'target_epoch': int(self.epochs),
-                'cadence': int(self.cadence), 'enabled': bool(self.enabled)}
+                'cadence': int(self.cadence), 'enabled': bool(self.enabled), 'note': self.note}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
         start = d['obs_starttime'] if 'obs_starttime' in d else d['obs_startdate']          # files written before the rename
         end = d['obs_endtime'] if 'obs_endtime' in d else d['obs_enddate']
         return cls(start=start, end=end, count=int(d.get('count', 1)), epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)),
-                   cadence=int(d.get('cadence', 0) or 0))
+                   cadence=int(d.get('cadence', 0) or 0), note=str(d.get('note', '') or ''))
 
     @staticmethod
     def _bound(value: datetime, grid: vis.SeasonGrid, is_end: bool) -> float:
@@ -1084,8 +1086,26 @@ def load_schedule(folder: Path | str) -> dict:
     return out
 
 
+BACKUP_DIR = 'backup'
+
+
+def backup_schedule(folder: Path | str) -> Path | None:
+    """Copy the current schedule file to backup/schedule_<its save time>.json (nothing when there is no file or the copy exists)."""
+    path = Path(folder) / SCHEDULE_FILE
+    if not path.is_file():
+        return None
+    stamp = datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y%m%d_%H%M%S')
+    target = Path(folder) / BACKUP_DIR / f'schedule_{stamp}.json'
+    if target.is_file():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(path.read_bytes())
+    return target
+
+
 def save_schedule(folder: Path | str, settings: dict) -> Path:
-    """settings: target key -> [TargetSettings, ...]; a single part is written as one object, several as a list."""
+    """settings: target key -> [TargetSettings, ...]; a single part is written as one object, several as a list. The previous file is kept in backup/."""
+    backup_schedule(folder)
     path = Path(folder) / SCHEDULE_FILE
     data = {'_description': 'Operator schedule of the Phase-2 requests: per requested target set (key = project|target) the obs_starttime / obs_endtime '
                             '(local nights, inclusive), frames per epoch (count) and number of epochs (target_epoch); a list when the target is split into parts.',
@@ -1112,5 +1132,5 @@ def schedule_rows(requests: list, plans: dict) -> list:
                              'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None, 'cadence': s.cadence if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
                              'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '',
-                             'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'note': t.note})
+                             'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'note': s.note if s else '', 'requester_note': t.note})
     return rows

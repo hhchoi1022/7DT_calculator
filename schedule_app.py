@@ -31,7 +31,7 @@ REQUEST_COLOR = '#555555'                 # requested OBS_WINDOW: a thin grey li
 CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
-EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'scheduled']
+EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'scheduled', 'Note']
 DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?(\s*,\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?)*\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
@@ -308,9 +308,9 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
                              'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
                              'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
-                             'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Note': t.note,
+                             'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Requester_note': t.note,
                              'obs_starttime': s.start_text.replace('T', ' '), 'obs_endtime': s.end_text.replace('T', ' '),
-                             'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled)})
+                             'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled), 'Note': s.note})
     return pd.DataFrame(rows)
 
 
@@ -338,12 +338,13 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
             cadence = int(r['cadence']) if not pd.isna(r['cadence']) else old.cadence
         except (TypeError, ValueError):
             count, epochs, cadence = old.count, old.epochs, old.cadence
+        note = '' if r['Note'] is None or (isinstance(r['Note'], float) and np.isnan(r['Note'])) else str(r['Note'])
         try:
             out[tkey].append(phase2.TargetSettings(start=_as_datetime_list(r['obs_starttime'], old.start), end=_as_datetime_list(r['obs_endtime'], old.end), count=max(count, 1),
-                                                   epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
+                                                   epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note))
         except ValueError as exc:                                      # e.g. two start times but one end time: keep the previous ranges and say so
             bad[f'{tkey}#{n + 1}'] = str(exc)
-            out[tkey].append(phase2.TargetSettings(start=old.start, end=old.end, count=max(count, 1), epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
+            out[tkey].append(phase2.TargetSettings(start=old.start, end=old.end, count=max(count, 1), epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note))
     st.session_state['sch_bad_rows'] = bad
     return {k: v or previous[k] for k, v in out.items()}
 
@@ -406,6 +407,8 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'Total exptime (h)': st.column_config.NumberColumn('Total exptime (h)', format='%.2f', help='exptime × count × target_epoch × orders of the mode (specall: 2), updated as you edit'),
         'With overhead (h)': st.column_config.NumberColumn('With overhead (h)', format='%.2f', help='target_epoch × (one epoch of count frames with the overhead model), updated as you edit'),
         'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
+        'Note': st.column_config.TextColumn('Note', width='medium', help='Your own note for this row (saved with the schedule)'),
+        'Requester_note': st.column_config.TextColumn('Requester_note', help='The NOTE the PI wrote in the request file'),
     }
     editor_key = f"sch_editor_{ss.get('sch_editor_version', 0)}"
     state = ss.get(editor_key)
@@ -422,8 +425,8 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
     first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS + ['Total exptime (h)', 'With overhead (h)']
     order = first + [c for c in base.columns if c not in first and c != 'key']
-    st.markdown('**Plan table** (one row per requested target set) — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, scheduled) '
-                'and press Enter; Total exptime = exptime × count × target_epoch × orders and With overhead follow your edits; the other columns repeat the request and cannot be edited.')
+    st.markdown('**Plan table** (one row per requested target set) — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, scheduled, Note) '
+                'and press Enter; Total exptime = exptime × count × target_epoch × orders and With overhead follow your edits; the other columns (Requester_note = the PI\'s NOTE) repeat the request and cannot be edited.')
     edited = st.data_editor(base, key=editor_key, column_config=column_config, disabled=disabled, hide_index=True,
                             width='stretch', height=min(60 + 36 * len(base), 560), column_order=order)
     ss['sch_tsettings'] = settings_from_frame(edited, ss['sch_tsettings'])
@@ -579,9 +582,9 @@ def export_section(requests: list, plans: dict, folder: Path) -> None:
     c1, c2, c3, c4 = st.columns(4)
     saved = phase2.load_schedule(folder)
     changed = {k: v for k, v in ss['sch_tsettings'].items() if saved.get(k) != v}
-    if c1.button('Save schedule', type='primary', key='sch_save', help=f'Writes {folder / phase2.SCHEDULE_FILE}'):
+    if c1.button('Save schedule', type='primary', key='sch_save', help=f'Writes {folder / phase2.SCHEDULE_FILE}; the previous file is kept in {folder / phase2.BACKUP_DIR}'):
         path = phase2.save_schedule(folder, ss['sch_tsettings'])
-        st.caption(f'Saved to {path}')
+        st.caption(f'Saved to {path} (previous versions in {folder / phase2.BACKUP_DIR})')
         changed = {}
     elif changed:
         c1.caption(f'{len(changed)} target set(s) changed since the last save.')

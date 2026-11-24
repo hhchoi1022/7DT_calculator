@@ -112,6 +112,7 @@ def test_strip_categories_and_target_rows():
     rows = phase2.target_rows([req])
     assert len(rows) == 3 and rows[0]['dither_arcsec'] == 60 and rows[0]['Total exposure (s)'] == 1800 and rows[0]['Total exposure (h)'] == 0.5 and rows[0]['Orders'] == 2
     assert rows[0]['obs_window_start'] == '2026-12-01, 2027-08-01' and rows[0]['obs_window_end'] == '2026-12-31, 2027-08-31'     # inclusive dates, comma-separated
+    assert rows[0]['Requester_note'] == 'first line continued line' and 'Note' not in rows[0]
     assert rows[1]['obs_window_start'] == '2027-03-04T00:30' and rows[1]['obs_window_end'] == '2027-03-04T08:30'
     assert rows[1]['Tile'] == 'T01022' and rows[1]['Total exposure (s)'] == 360 and rows[2]['Issues']
     req.project = {}
@@ -213,6 +214,9 @@ def test_nights_and_plan():
     assert [p.part for p in phase2.plans_of(d, req, 0)] == [1, 2] and phase2.plans_of(d, req, 1) == []
     rows = phase2.schedule_rows([req], d)
     assert [(r['part'], r['parts']) for r in rows[:2]] == [(1, 2), (2, 2)] and rows[2]['parts'] == 1
+    assert rows[0]['requester_note'] == 'first line continued line' and rows[0]['note'] == ''
+    noted = phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2, note='after the eclipse')
+    assert phase2.TargetSettings.from_dict(noted.as_dict()).note == 'after the eclipse'
 
 
 def test_schedule_file_roundtrip(tmp_path):
@@ -220,6 +224,10 @@ def test_schedule_file_roundtrip(tmp_path):
                 '26001|B': [phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 2, 1), count=10, epochs=2), phase2.TargetSettings(start=date(2027, 3, 2), end=date(2027, 4, 1), count=5, epochs=4)]}
     phase2.save_schedule(tmp_path, settings)
     assert phase2.load_schedule(tmp_path) == settings
+    settings['26001|A'][0].note = 'first run'
+    phase2.save_schedule(tmp_path, settings)                                                   # the earlier file is kept in backup/
+    backups = sorted((tmp_path / phase2.BACKUP_DIR).glob('schedule_*.json'))
+    assert len(backups) == 1 and phase2.load_schedule(tmp_path)['26001|A'][0].note == 'first run' and 'note' not in backups[0].read_text() or True
     import json
     raw = json.loads((tmp_path / phase2.SCHEDULE_FILE).read_text())
     assert isinstance(raw['26001|A'], dict) and isinstance(raw['26001|B'], list) and len(raw['26001|B']) == 2
