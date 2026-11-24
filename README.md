@@ -146,8 +146,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   `vis.intervals_above`), requested nights (date windows by night date, timed windows by overlap, UTC), Moon
   illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. The plan is
   per target set (`phase2.TargetSettings`): obs_starttime / obs_endtime (UTC; a date alone means that whole
-  local night, both ends inclusive, a time cuts exactly there; the entered range is the master, the requested
-  OBS_WINDOW is reference only while timed windows still fix the time of night), count
+  local night, both ends inclusive, a time cuts exactly there; several ranges comma-separated, the n-th
+  start with the n-th end; the entered ranges are the master, the requested OBS_WINDOW is reference only
+  (shown split into obs_window_start / obs_window_end) while timed windows still fix the time of night), count
   (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free; the default
   is read from 'cadence=7d' in the NOTE); a target set may be split into parts, each with its own
   values (`make_target_plans`, part keys `project|target#n`, frames compared with NUM_FRAMES as a whole);

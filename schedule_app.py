@@ -32,7 +32,7 @@ CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
 EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'scheduled']
-DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?\s*$'
+DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?(\s*,\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?)*\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
@@ -308,18 +308,18 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
                              'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
                              'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
-                             'OBS_WINDOW': t.window_text, 'Note': t.note,
-                             'obs_starttime': phase2.time_text(s.start).replace('T', ' '), 'obs_endtime': phase2.time_text(s.end).replace('T', ' '),
+                             'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Note': t.note,
+                             'obs_starttime': s.start_text.replace('T', ' '), 'obs_endtime': s.end_text.replace('T', ' '),
                              'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled)})
     return pd.DataFrame(rows)
 
 
-def _as_datetime(value, fallback: datetime) -> datetime:
-    """Typed 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (UTC); anything else keeps the previous value."""
+def _as_datetime_list(value, fallback: list) -> list:
+    """Typed 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (UTC), several separated by commas; anything else keeps the previous value."""
     if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NaT:
         return fallback
     try:
-        return phase2.as_datetime(value)
+        return phase2.as_datetime_list(value) or fallback
     except (ValueError, TypeError):
         return fallback
 
@@ -327,6 +327,7 @@ def _as_datetime(value, fallback: datetime) -> datetime:
 def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
     """The edited rows back into target key -> [TargetSettings, ...] (rows of a target set are consecutive, in part order)."""
     out = {k: [] for k in previous}
+    bad = {}
     for _, r in df.iterrows():
         tkey, _, n = str(r['key']).rpartition('#')
         n = int(n) - 1
@@ -337,8 +338,13 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
             cadence = int(r['cadence']) if not pd.isna(r['cadence']) else old.cadence
         except (TypeError, ValueError):
             count, epochs, cadence = old.count, old.epochs, old.cadence
-        out[tkey].append(phase2.TargetSettings(start=_as_datetime(r['obs_starttime'], old.start), end=_as_datetime(r['obs_endtime'], old.end), count=max(count, 1), epochs=max(epochs, 1),
-                                               enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
+        try:
+            out[tkey].append(phase2.TargetSettings(start=_as_datetime_list(r['obs_starttime'], old.start), end=_as_datetime_list(r['obs_endtime'], old.end), count=max(count, 1),
+                                                   epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
+        except ValueError as exc:                                      # e.g. two start times but one end time: keep the previous ranges and say so
+            bad[f'{tkey}#{n + 1}'] = str(exc)
+            out[tkey].append(phase2.TargetSettings(start=old.start, end=old.end, count=max(count, 1), epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
+    st.session_state['sch_bad_rows'] = bad
     return {k: v or previous[k] for k, v in out.items()}
 
 
@@ -359,7 +365,7 @@ def split_controls(requests: list) -> None:
     c1.caption(f'{len(parts)} part(s) at the moment.' if len(parts) > 1 else 'One part at the moment.')
     if c2.button('Add a part', key='sch_split_add', help='Adds a part with the same range as the last one; then edit its dates, count and epochs in the table.'):
         last = parts[-1]
-        parts.append(phase2.TargetSettings(start=last.start, end=last.end, count=last.count, epochs=1, enabled=last.enabled))
+        parts.append(phase2.TargetSettings(start=list(last.start), end=list(last.end), count=last.count, epochs=1, enabled=last.enabled))
         remount_editor(requests)
         st.rerun()
     if c3.button('Remove last part', key='sch_split_remove', disabled=len(parts) < 2):
@@ -378,8 +384,8 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
         ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
         remount_editor(requests)
-    c3.caption('Edit obs_starttime / obs_endtime (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there), count (frames per filter in one epoch), '
-               'target_epoch and cadence (days between epochs, 0 = free). '
+    c3.caption('Edit obs_starttime / obs_endtime (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there; several ranges comma-separated, '
+               'the n-th start with the n-th end), count (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free). '
                'The range you enter is the master (the requested OBS_WINDOW is shown for reference only; timed windows still fix the time of night). '
                'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is up for that long.')
     split_controls(requests)
@@ -388,9 +394,12 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'Exptime (s)': st.column_config.NumberColumn(format='%g'),
         'dither_arcsec': st.column_config.NumberColumn(format='%.0f'), 'Requested (h)': st.column_config.NumberColumn(format='%.2f'),
         'obs_starttime': st.column_config.TextColumn('obs_starttime', validate=DATE_PATTERN, required=True, width='medium',
-                                                     help='UTC, typed as YYYY-MM-DD (the whole local night of that date) or YYYY-MM-DD HH:MM (start exactly there, e.g. 2027-03-05 00:30).'),
+                                                     help='UTC, typed as YYYY-MM-DD (the whole local night of that date) or YYYY-MM-DD HH:MM (start exactly there, e.g. 2027-03-05 00:30). '
+                                                          'Several ranges: separate the starts with commas and list the matching ends in obs_endtime.'),
         'obs_endtime': st.column_config.TextColumn('obs_endtime', validate=DATE_PATTERN, required=True, width='medium',
-                                                   help='UTC, typed as YYYY-MM-DD (that whole local night, inclusive) or YYYY-MM-DD HH:MM (stop exactly there).'),
+                                                   help='UTC, typed as YYYY-MM-DD (that whole local night, inclusive) or YYYY-MM-DD HH:MM (stop exactly there); one entry per start, comma-separated.'),
+        'obs_window_start': st.column_config.TextColumn('obs_window_start', help='Starts of the OBS_WINDOWs the PI requested (reference only)'),
+        'obs_window_end': st.column_config.TextColumn('obs_window_end', help='Ends of the OBS_WINDOWs the PI requested (inclusive dates; reference only)'),
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
         'cadence': st.column_config.NumberColumn('cadence (d)', min_value=0, max_value=365, step=1, required=True, help='Days between consecutive epochs; 0 = no constraint. Taken from "cadence=7d" in the NOTE when present.'),
@@ -442,6 +451,9 @@ def row_problems(plans: dict) -> None:
         return f'{p.req.key} {p.target.display}' + (f' part {p.part}' if n_parts[p.target_key] > 1 else '')
 
     msg = f'{len(on)} of {len(plans)} rows scheduled; planned {total:.1f} h in total.'
+    bad = st.session_state.get('sch_bad_rows') or {}
+    if bad:
+        st.error('Ranges not applied (the previous values are kept):\n\n' + '\n'.join(f'- {k.replace("#1", "") if n_parts.get(k.rpartition("#")[0], 1) == 1 else k}: {v}' for k, v in bad.items()))
     if errors:
         st.error(f'{len(errors)} row(s) cannot be observed as entered. {msg}\n\n' + '\n'.join(f'- {name(p)}: ' + '; '.join(p.issues + p.warnings) for p in errors))
     elif warns:

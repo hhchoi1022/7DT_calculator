@@ -111,6 +111,8 @@ def test_strip_categories_and_target_rows():
     phase2.compute_times(req)
     rows = phase2.target_rows([req])
     assert len(rows) == 3 and rows[0]['dither_arcsec'] == 60 and rows[0]['Total exposure (s)'] == 1800 and rows[0]['Total exposure (h)'] == 0.5 and rows[0]['Orders'] == 2
+    assert rows[0]['obs_window_start'] == '2026-12-01, 2027-08-01' and rows[0]['obs_window_end'] == '2026-12-31, 2027-08-31'     # inclusive dates, comma-separated
+    assert rows[1]['obs_window_start'] == '2027-03-04T00:30' and rows[1]['obs_window_end'] == '2027-03-04T08:30'
     assert rows[1]['Tile'] == 'T01022' and rows[1]['Total exposure (s)'] == 360 and rows[2]['Issues']
     req.project = {}
     assert req.dither_arcsec == 0.0 and phase2.target_rows([req])[0]['dither_arcsec'] == 0.0
@@ -188,6 +190,18 @@ def test_nights_and_plan():
     phase2.compute_times(noted)
     assert phase2.default_target_settings(noted, noted.targets[0], table, 0).cadence == 7 and phase2.default_target_settings(req, req.targets[0], table, 0).cadence == 0
     assert phase2.TargetSettings.from_dict(phase2.TargetSettings(start=date(2027, 1, 1), end=date(2027, 2, 1), count=1, epochs=2, cadence=5).as_dict()).cadence == 5
+    # several ranges in one row (comma-separated), the n-th start with the n-th end
+    multi = phase2.TargetSettings(start='2026-12-01, 2026-12-20', end='2026-12-05, 2026-12-25 03:00', count=1, epochs=2)
+    assert multi.as_dict()['obs_starttime'] == '2026-12-01, 2026-12-20' and multi.as_dict()['obs_endtime'] == '2026-12-05, 2026-12-25T03:00'
+    assert multi.start_night == date(2026, 12, 1) and multi.end_night == date(2026, 12, 25) and phase2.TargetSettings.from_dict(multi.as_dict()) == multi
+    mp = phase2.make_target_plan(req, 0, table, multi, use_moon=False)
+    assert mp.in_range[:5].all() and not mp.in_range[5:19].any() and mp.in_range[19:24].all() and mp.n_placed == 2
+    try:
+        phase2.TargetSettings(start='2026-12-01, 2026-12-20', end='2026-12-05', count=1, epochs=1)
+        raise AssertionError('mismatched lists must be refused')
+    except ValueError as exc:
+        assert 'same number' in str(exc)
+    assert phase2.TargetSettings(start='2026-12-05', end='2026-12-01', count=1, epochs=1).inverted() and not multi.inverted()
     # a target set split into two parts: frames compared as a whole, one plan per part
     parts = [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2), phase2.TargetSettings(start=date(2026, 12, 20), end=date(2026, 12, 31), count=3, epochs=1)]
     split = phase2.make_target_plans(req, 0, table, parts, use_moon=False)

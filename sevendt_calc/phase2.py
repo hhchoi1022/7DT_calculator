@@ -65,6 +65,15 @@ class Window:
         return (self.end - self.start).total_seconds() / 3600.0
 
     @property
+    def start_text(self) -> str:
+        return time_text(self.start)
+
+    @property
+    def end_text(self) -> str:
+        """Inclusive end as written in the file: the last date for a date window, the UTC time for a timed one."""
+        return time_text(self.end) if self.timed else self.last_date.isoformat()
+
+    @property
     def first_date(self) -> date:
         return self.start.date()
 
@@ -123,6 +132,14 @@ class RequestTarget:
     @property
     def window_text(self) -> str:
         return '; '.join(w.text for w in self.windows)
+
+    @property
+    def window_starts_text(self) -> str:
+        return ', '.join(w.start_text for w in self.windows)
+
+    @property
+    def window_ends_text(self) -> str:
+        return ', '.join(w.end_text for w in self.windows)
 
     @property
     def mode_text(self) -> str:
@@ -610,7 +627,8 @@ def target_rows(requests: list) -> list:
                          'RA (°)': None if t.ra is None else round(t.ra, 5), 'Dec (°)': None if t.dec is None else round(t.dec, 5),
                          'Exptime (s)': t.exptime, 'Frames': t.nframes, 'Orders': t.n_orders, 'Total exposure (s)': round(t.exposure_s, 1),
                          'Total exposure (h)': round(t.exposure_s / 3600.0, 2), 'With overhead (h)': round(t.total_s / 3600.0, 2),
-                         'dither_arcsec': req.dither_arcsec, 'OBS_WINDOW': t.window_text, 'Note': t.note, 'Issues': '; '.join(t.issues), 'File': req.name})
+                         'dither_arcsec': req.dither_arcsec, 'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'Note': t.note,
+                         'Issues': '; '.join(t.issues), 'File': req.name})
     return rows
 
 
@@ -655,56 +673,93 @@ def time_text(value: datetime) -> str:
     return value.strftime('%Y-%m-%d') if (value.hour, value.minute, value.second) == (0, 0, 0) else value.strftime('%Y-%m-%dT%H:%M')
 
 
+def as_datetime_list(value) -> list:
+    """One or more UTC datetimes: a list, or a comma-separated string ('2027-02-24, 2027-05-01 03:30'), or a single value."""
+    if isinstance(value, (list, tuple)):
+        return [as_datetime(v) for v in value]
+    if isinstance(value, str):
+        return [as_datetime(part) for part in value.split(',') if part.strip()]
+    return [as_datetime(value)]
+
+
 @dataclass
 class TargetSettings:
     """
-    What the operator enters for one requested target set. obs_starttime / obs_endtime are UTC; a value
-    without a time (midnight) means the whole local night of that date (so a date-only range covers the
-    nights of both dates), a value with a time cuts exactly there.
+    What the operator enters for one requested target set. obs_starttime / obs_endtime are UTC and may list
+    several ranges (comma-separated, the n-th start with the n-th end); a value without a time (midnight)
+    means the whole local night of that date (so a date-only range covers the nights of both dates), a
+    value with a time cuts exactly there.
     """
-    start: datetime                # obs_starttime
-    end: datetime                  # obs_endtime
+    start: list                    # obs_starttime: one datetime per range
+    end: list                      # obs_endtime: the matching end of every range
     count: int                     # frames per filter in one epoch (visit)
     epochs: int                    # number of epochs (target_epoch)
     enabled: bool = True
     cadence: int = 0               # days between consecutive epochs (0: no constraint)
 
     def __post_init__(self):
-        self.start = as_datetime(self.start)
-        self.end = as_datetime(self.end)
+        self.start = as_datetime_list(self.start)
+        self.end = as_datetime_list(self.end)
+        if not self.start or not self.end:
+            raise ValueError('obs_starttime and obs_endtime are required')
+        if len(self.start) != len(self.end):
+            raise ValueError(f'{len(self.start)} start time(s) but {len(self.end)} end time(s): list the same number of ranges')
+
+    @property
+    def ranges(self) -> list:
+        return sorted(zip(self.start, self.end))
+
+    @property
+    def first(self) -> datetime:
+        return min(self.start)
+
+    @property
+    def last(self) -> datetime:
+        return max(self.end)
 
     @property
     def start_night(self) -> date:
-        return self.start.date()
+        return self.first.date()
 
     @property
     def end_night(self) -> date:
-        return self.end.date()
+        return self.last.date()
+
+    @property
+    def start_text(self) -> str:
+        return ', '.join(time_text(x) for x in self.start)
+
+    @property
+    def end_text(self) -> str:
+        return ', '.join(time_text(x) for x in self.end)
 
     def as_dict(self) -> dict:
-        return {'obs_starttime': time_text(self.start), 'obs_endtime': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs),
+        return {'obs_starttime': self.start_text, 'obs_endtime': self.end_text, 'count': int(self.count), 'target_epoch': int(self.epochs),
                 'cadence': int(self.cadence), 'enabled': bool(self.enabled)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
         start = d['obs_starttime'] if 'obs_starttime' in d else d['obs_startdate']          # files written before the rename
         end = d['obs_endtime'] if 'obs_endtime' in d else d['obs_enddate']
-        return cls(start=as_datetime(start), end=as_datetime(end), count=int(d.get('count', 1)),
-                   epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)), cadence=int(d.get('cadence', 0) or 0))
+        return cls(start=start, end=end, count=int(d.get('count', 1)), epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)),
+                   cadence=int(d.get('cadence', 0) or 0))
 
-    def bounds_jd(self, grid: vis.SeasonGrid) -> tuple[float, float]:
-        """The range as UTC Julian dates: midnight values expand to the evening / morning twilight of that local night."""
-        if (self.start.hour, self.start.minute) == (0, 0):
-            i = max(0, min((self.start.date() - grid.dates[0]).days, len(grid.dates) - 1))
-            lo = grid.start_jd[i] if self.start.date() >= grid.dates[0] else grid.start_jd[0] - 1.0
-        else:
-            lo = Time(self.start).jd
-        if (self.end.hour, self.end.minute) == (0, 0):
-            i = max(0, min((self.end.date() - grid.dates[0]).days, len(grid.dates) - 1))
-            hi = grid.end_jd[i] if self.end.date() <= grid.dates[-1] else grid.end_jd[-1] + 1.0
-        else:
-            hi = Time(self.end).jd
-        return float(lo), float(hi)
+    @staticmethod
+    def _bound(value: datetime, grid: vis.SeasonGrid, is_end: bool) -> float:
+        if (value.hour, value.minute) == (0, 0):                      # a bare date: the whole local night
+            i = max(0, min((value.date() - grid.dates[0]).days, len(grid.dates) - 1))
+            if is_end:
+                return float(grid.end_jd[i] if value.date() <= grid.dates[-1] else grid.end_jd[-1] + 1.0)
+            return float(grid.start_jd[i] if value.date() >= grid.dates[0] else grid.start_jd[0] - 1.0)
+        return float(Time(value).jd)
+
+    def bounds_jd(self, grid: vis.SeasonGrid) -> list:
+        """Every range as (start, end) UTC Julian dates: midnight values expand to the evening / morning twilight of that local night."""
+        return [(self._bound(s, grid, False), self._bound(e, grid, True)) for s, e in self.ranges]
+
+    def inverted(self) -> bool:
+        """A range that ends before it starts (a bare date equal on both sides is one whole night, not inverted)."""
+        return any(e < s or (e == s and (s.hour, s.minute) != (0, 0)) for s, e in zip(self.start, self.end))
 
 
 def target_key(req: RequestFile, t: RequestTarget) -> str:
@@ -809,9 +864,11 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
     grid = table.grid
     issues, warnings = [], []
     epoch_h = epoch_hours(t, settings.count, oh_config) if settings.count >= 1 else 0.0
-    lo_jd, hi_jd = settings.bounds_jd(grid)
+    bounds = settings.bounds_jd(grid)
     night_start = grid.start_jd
-    in_range = (grid.end_jd > lo_jd) & (grid.start_jd < hi_jd)
+    in_range = np.zeros(n, bool)
+    for lo_jd, hi_jd in bounds:
+        in_range |= (grid.end_jd > lo_jd) & (grid.start_jd < hi_jd)
     usable = in_range.copy()
     if use_moon:
         usable &= table.moon_ok
@@ -820,14 +877,17 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
         if not (usable[i] and settings.enabled):
             intervals.append([])
             continue
-        lo_h, hi_h = (lo_jd - night_start[i]) * 24.0, (hi_jd - night_start[i]) * 24.0          # the range inside this night, hours after twilight
-        clipped = [(max(a, lo_h), min(b, hi_h)) for a, b in table.target_intervals(i, j, respect_dates=False)]
-        intervals.append([(a, b) for a, b in clipped if b - a > 1e-9])
+        ups = table.target_intervals(i, j, respect_dates=False)
+        clipped = []
+        for lo_jd, hi_jd in bounds:
+            lo_h, hi_h = (lo_jd - night_start[i]) * 24.0, (hi_jd - night_start[i]) * 24.0      # the range inside this night, hours after twilight
+            clipped += [(max(a, lo_h), min(b, hi_h)) for a, b in ups if min(b, hi_h) - max(a, lo_h) > 1e-9]
+        intervals.append(merge_intervals(clipped))
     longest = np.array([max((hi - lo for lo, hi in iv), default=0.0) for iv in intervals])
     feasible = (longest >= epoch_h - 1e-9) & (longest > 0) if epoch_h > 0 else np.zeros(n, bool)
     placed = np.zeros(n, bool)
     if settings.enabled:
-        if settings.end <= settings.start and not (settings.end == settings.start and (settings.start.hour, settings.start.minute) == (0, 0)):
+        if settings.inverted():
             issues.append('obs_endtime before obs_starttime')
         if settings.count < 1 or settings.epochs < 1:
             issues.append('count and target_epoch must be at least 1')
@@ -1048,8 +1108,9 @@ def schedule_rows(requests: list, plans: dict) -> list:
                 rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'part': p.part if p else 1, 'parts': len(parts),
                              'type': t.target_type, 'tile': t.tile_id, 'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5),
                              'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
-                             'obs_starttime': time_text(s.start) if s and s.enabled else '', 'obs_endtime': time_text(s.end) if s and s.enabled else '',
+                             'obs_starttime': s.start_text if s and s.enabled else '', 'obs_endtime': s.end_text if s and s.enabled else '',
                              'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None, 'cadence': s.cadence if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
-                             'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})
+                             'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '',
+                             'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'note': t.note})
     return rows
