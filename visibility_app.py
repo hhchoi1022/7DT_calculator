@@ -42,27 +42,6 @@ def monthly_cached(key: tuple, limits: tuple, start_night: date, coords: tuple):
     return vis.monthly_visibility(targets, start_night, site, cons, grid=month_grid_cached(key, limits, start_night))
 
 
-def night_summary(r: vis.VisibilityResult) -> dict:
-    """Status of a target over the whole night (no requested time): observable windows or the reason why not."""
-    c = r.constraints
-    night = r.sun_alt <= c.sun_alt
-    alt_ok = night & (r.alt >= c.min_alt) & (r.alt <= c.max_alt)
-    if r.windows:
-        status, reason = 'OK', ''
-    elif not alt_ok.any():
-        status, reason = 'WARNING', f'never above {c.min_alt:g}° during the night'
-    elif not (alt_ok & (r.moon_sep >= c.moon_sep)).any():
-        status, reason = 'WARNING', f'Moon closer than {c.moon_sep:g}°'
-    else:
-        status, reason = 'WARNING', 'not observable'
-    sep_night = r.moon_sep[night] if night.any() else r.moon_sep
-    return {'target': r.target.label, 'status': status, 'observable_hours': round(r.observable_hours, 1),
-            'windows': r.window_text(), 'max_alt_deg': round(r.max_alt, 1),
-            'max_alt_time_utc': r.max_alt_time.iso[:16] if r.max_alt_time is not None else '',
-            'moon_sep_deg': f'{sep_night.min():.0f}-{sep_night.max():.0f}', 'moon_illumination': round(r.moon_illumination, 2),
-            'note': reason}
-
-
 def main():
     feedback_note()
     st.title('7DT Visibility')
@@ -91,7 +70,7 @@ def main():
     st.markdown(f'**Night of {night.local_date} (local)**: sunset {night.utc(night.sunset)} UT, '
                 f'Sun {cons.sun_alt:g}° at {night.utc(night.evening_twilight)}-{night.utc(night.morning_twilight)} UT, '
                 f'sunrise {night.utc(night.sunrise)} UT. Moon illumination {100 * results[0].moon_illumination:.0f} %.')
-    df = pd.DataFrame([night_summary(r) for r in results])
+    df = pd.DataFrame([vis.night_summary(r) for r in results])
     st.dataframe(styled_rows(df, 'status'), hide_index=True, width='stretch')
     st.download_button('Download table (CSV)', df.to_csv(index=False).encode('utf-8'), file_name='visibility.csv', mime='text/csv')
     st.plotly_chart(vis.plot_visibility_interactive(results, site, mark_time=False), width='stretch',

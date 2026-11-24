@@ -1,7 +1,7 @@
 # 7DT Observation Calculator
 
 Web calculators for people who request observations with 7DT (the 7-Dimensional Telescope: 16 units,
-each with its own filter wheel). Five stand-alone Streamlit pages share one core package
+each with its own filter wheel), plus the operator's scheduling page. Stand-alone Streamlit pages share one core package
 (`sevendt_calc/`) and one UI helper module (`ui_common.py`). Every page reads the live TCSpy
 configuration of the telescope (site, filters installed in each unit, observation modes) at start-up
 and re-reads it every minute, so the pages follow the real instrument state without redeploys.
@@ -17,7 +17,10 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | Exposure time / SNR | `etc_app.py` | `./run_etc.sh` | Empirical 7DT depth model: SNR for an exposure time and frame count, or the total exposure time needed for a target SNR, for every filter of an observation mode; point or extended sources; spectrum templates or uploads (Plotly) |
 | Overhead time | `overhead_app.py` | `./run_overhead.sh` | Total observing time of one observation (exposure, readout, filter changes, autofocus, slewing, dispatch) for an observation mode |
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
+| Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
+| Schedule viewer (PIs) | `plan_app.py` | `./run_plan.sh` | Read-only view of the saved schedule: with their Project ID and key a PI sees their own programme (summary, planned rows with assumed epoch nights, visibility of their targets, the operator's notes) and the other programmes only as anonymous "another programme has an epoch" marks; the admin key (`_admin_key` in `data/projects.json`) shows every programme like the operator's page without editing |
+| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects and lists every requested target set in one editable table: the request (mode, exptime, frames, total with overhead, `dither_arcsec` per project, OBS_WINDOW) plus the operator's `obs_starttime`, `obs_endtime`, `count` (frames per epoch) and `target_epoch` (a target set can be split into parts with their own values); a list of rows that do not fit (not enough nights on which the target is up long enough, frames differing from the request), a per-project summary (requested / planned time against the allocation, first and last assumed epoch), an assumed automatic schedule (epochs placed load-balanced on feasible nights) and the nights on which assumed epochs compete for the same time of night; per project PI / request type / mode / sky background / allocation / planned time; visibility of any chosen targets (several projects at once): curves (max altitude or observable hours) with the assumed epochs as diamonds over one bar per chosen target (observable / at transit or >= 3 h / Moon unsuitable, the entered range and the requested OBS_WINDOW as lines, epochs as diamonds); a per-project, per-night strip chart with the assumed epochs; the schedule is saved next to the request files and exported as an observation list (fixed columns) to a Google Sheet worksheet or CSV |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
 overridden with `PORT=...`; the ports in use are assigned by the operator and are not part of this
@@ -69,11 +72,20 @@ sevendt_calc/            core package, no Streamlit imports
   overhead.py            overhead model (OverheadConfig from data/overhead.json), estimate(), timeline plot
   tiles.py               7DS tile catalogue (data/final_tiles.txt), tile matching, tile-ID lookup, Plotly maps
   modebuild.py           mode builder core: validation, JSON export in TCSpy layout, padding, add/remove helpers
+  trigger.py             observation requests: spreadsheet columns, upload parsing + column aliases, validation, row formatting
+  phase2.py              Phase-2 request files: parser, project matching by PI name (or mapping.json), exposure / overhead time per target,
+                         per-night tables on the season grid, the operator's plan (window, hours per night) and the night-packing conflict check
+  sheets.py              Google Sheets read / append / replace (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
+  components/tile_picker/index.html   browser-side tile map (Plotly.js, plain HTML + JS, no build step): clicks toggle tiles locally,
+                         only the selection is sent back (Streamlit component protocol by hand); wrapper ui_common.tile_picker()
   modeplot.py            observation-mode figure (transmission curves + unit x order grid), matplotlib and Plotly
-ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
+schedule_plots.py        shared by the two scheduling pages: cached programme data (season grid, Moon, requests, night tables, saved plans), the Plotly figures and the project summary table
+ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving, season_grid_for(),
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
-data/                    settings.json (configuration folder), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
+data/                    settings.json (configuration folder, sheet key, request folder), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
+Opentime/<period>/       symlink to the Phase-2 folder on the shared mount (/lyman/data1/7dt/opentime/<period>: request files *.txt, optional mapping.json, the saved schedule.json and backup/); git-ignored (PI e-mails)
+docs/deploy_schedule_viewer.md   how the public server (7ds.snu.ac.kr) runs the Schedule viewer behind its HTTPS proxy
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -116,6 +128,58 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   ETC and Overhead pages are those listed in `data/public_modes.json` (list order = menu order, first entry =
   default; `null` = every file). The Mode builder always lists every file.
 
+- **Observation requests** (`data/trigger.json`): spreadsheet URL, period prefix of the worksheet name, the
+  selectable obsmodes / colormodes / deepmodes (specmodes follow `public_modes.json`), default and maximum
+  exposure time (above the maximum = error, any other value than the default = warning), default count,
+  binning, gain, the fixed priority and the hidden columns (note, comment = Project ID, weight, is_ToO,
+  is_rapidToO, objtype). Writing needs a Google service-account key with editor access to the spreadsheet;
+  without one the page still validates and offers the CSV. Column aliases live in `trigger.FIELDS`.
+  `data/projects.json` (git-ignored, see `projects.example.json`) maps Project IDs to their submission key and
+  allocated hours: with it, a request needs the key and may not exceed the allocation; without it every ID is
+  accepted. Survey requests take 7DS tile IDs as object names and fix the coordinates to the tile centres.
+
+- **Scheduling** (`sevendt_calc/phase2.py`): the request folder is `phase2_requests_dir` of `data/settings.json`
+  (or `SEVENDT_PHASE2_DIR`). File format: `[PROPOSAL]` block, one `[TARGET] ... [END TARGET]` block with one
+  `KEY: value` set per target (blank line between sets; NOTE may continue on indented lines; values may carry
+  units). `NUM_FRAMES` is per filter over the whole programme, so the exposure is `exptime x frames x orders`
+  (specall: 2 orders); the total adds the overhead model's estimate of one visit. Files are matched to
+  `data/projects.json` by the PI name (ToO / mode keywords separate a PI with two projects); `mapping.json`
+  overrides. Nights are the 274 local nights 2026-12-01 to 2027-08-31 on the season grid; per target: nightly
+  maximum altitude (`vis.nightly_max_altitude`), hours and intervals above 30 deg (`vis.hours_above`,
+  `vis.intervals_above`), requested nights (date windows by night date, timed windows by overlap, UTC), Moon
+  illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. The plan is
+  per target set (`phase2.TargetSettings`): obs_starttime / obs_endtime (UTC; a date alone means that whole
+  local night, both ends inclusive, a time cuts exactly there; several ranges comma-separated, the n-th
+  start with the n-th end; the entered ranges are the master, the requested OBS_WINDOW is reference only
+  (shown split into obs_window_start / obs_window_end) while timed windows still fix the time of night), count
+  (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free; the default
+  is read from 'cadence=7d' in the NOTE); a target set may be split into parts, each with its own
+  values (`make_target_plans`, part keys `project|target#n`, frames compared with NUM_FRAMES as a whole);
+  one epoch lasts `phase2.epoch_hours` (exposure x orders
+  plus the overhead model of one visit, cached per mode / exptime / count). `make_target_plan` marks the
+  nights of the range (Moon condition optional) on which the target's longest interval above the limit (inside
+  its timed window, if any, and inside the range's times) holds one epoch; blocking issues (not enough
+  feasible nights, no coordinates) versus warnings (frames differ from NUM_FRAMES). `place_epochs`
+  assumes the automatic scheduler: most constrained targets first, each epoch in its own part of the range
+  on the night with the least load; with a cadence (and more than one epoch) the epochs are chained that
+  many days apart (`_place_with_cadence`: the start from which the most epochs fit with the least load,
+  nearest feasible night within a third of the cadence, else the next one) and a chain shorter than
+  target_epoch is a blocking issue. The conflict check packs each night pre-emptively, least slack first
+  (`phase2.pack_night_slots`), and lists nights where an epoch gets more than a minute less than it needs.
+  The schedule is saved as `schedule.json` in the request folder (keys `project|target`, a list when split;
+  each entry also carries the operator's `note`); every save first copies the previous file to
+  `backup/schedule_<save time>.json`. The PI's NOTE is shown as Requester_note. `phase2.export_rows` turns
+  the scheduled parts into the observation list (`EXPORT_COLUMNS`: objname, RA, De, cadence, target_count,
+  starttime, endtime, sky_brightness, exptime, count, filter_, binning, gain, dither_arcsec, colormode,
+  specmode, obsmode, priority, weight, objtype, program_id, program_PI, note; fixed values from
+  `data/trigger.json`), which the page writes to a worksheet of the request spreadsheet with
+  `sheets.replace_rows` (service-account key as for the request page) or offers as CSV. Strip charts use
+  `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
+  heatmap with a discrete colour scale with the assumed epochs as diamonds on the rows (category labels as y:
+  numbers would add rows '0', '1', ...). The visibility figure has two panels: curves with epoch diamonds,
+  and one strip per chosen target (lines for the entered range and the OBS_WINDOW are shapes with
+  `yref='y2'` and numeric y = category index, which works for shapes but not for traces). `dither_arcsec` comes from `data/projects.json` (per project; 0 when absent).
+
 ## Working rules (decisions already made with the telescope operator; keep them)
 
 - Defaults everywhere: exposure time 100 s, 3 frames.
@@ -133,7 +197,22 @@ never copy its contents into the repo (some files hold credentials). Mode files 
 - Mode builder: units across, wheel slots down, click to append (duplicates allowed), click an Order
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
-- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`).
+- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`, `pl_`).
+- The schedule viewer never writes anything and shows a PI only their own programme; the other programmes
+  are reduced to per-night "another programme has an epoch" marks (no names, no hours). It reads the
+  schedule the operator saved (`schedule.json`), so unsaved edits are invisible to PIs. The operator page
+  runs on lyman (internal network only); the viewer runs on the public server behind HTTPS and reads the
+  same folder over the shared mount (`docs/deploy_schedule_viewer.md`).
+- Scheduling page: the editable plan table comes first (`st.data_editor` with a key and fixed rows: in
+  Streamlit 1.64 such an editor keeps its identity across pure value changes, so the input frame is rebuilt
+  every run with live totals (Total exptime, With overhead) without losing edits or scroll; the key is
+  bumped only on reset / load / split, which must discard the widget's edits; the request columns are
+  disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the
+  list of rows that do not fit and the per-project summary; obs_starttime / obs_endtime are text cells (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, regex
+  validated) because the browser's datetime picker follows the viewer's locale (12-hour clocks cannot
+  enter 00); projects table with single-row selection (tick the box) plus a selectbox. The visibility section
+  plots the chosen targets of the chosen projects in one figure (no per-target figures, no nightly-plan
+  figure).
 - New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
 
 ## Gotchas (learned the hard way)
@@ -150,6 +229,11 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   before the grid is drawn, so one click costs one script run.
 - Streamlit's fixed header swallows clicks in the top ~60 px of the viewport (matters for browser tests
   that scroll a grid to the top). Canvas grids need a hover before the click.
+- A selectbox whose option labels change (e.g. a count appended by `format_func`) is a new widget for
+  Streamlit even with a key, so its choice resets; keep labels fixed and show such counts elsewhere.
+- Streamlit magic: a bare expression statement in a page file that is not a plain call (e.g. a conditional
+  expression `a() if x else b()`) is passed to `st.write()`; with a Plotly figure that draws an extra copy
+  of the figure each time. Use if statements or assign the result.
 - Plotly: never call `fig.add_shape` / `fig.add_annotation` in a loop (quadratic); build lists and assign
   them once in `update_layout`. Downsample curves before sending them to the browser. Legend line
   samples follow the trace width only with `itemsizing='trace'`.

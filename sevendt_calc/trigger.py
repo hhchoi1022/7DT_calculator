@@ -1,0 +1,436 @@
+"""
+Observation requests: the spreadsheet columns, reading of uploaded target tables, validation of every
+row against the request rules and the current instrument, and formatting for the request spreadsheet.
+Settings come from data/trigger.json.
+"""
+from __future__ import annotations
+
+import io
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+from .config import DATA_DIR, ObsMode, installed_filters, load_colormodes, load_filtinfo, load_specmodes, public_submodes, resolve_obsmode
+from .targets import parse_coordinates
+from .tiles import normalise_tile_id, tile_centre
+
+TRIGGER_JSON = DATA_DIR / 'trigger.json'
+DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
+OBJNAME_PATTERN = re.compile(r'^[A-Za-z0-9-]+$')      # the only symbol allowed in an object name is '-'
+DATE_EXAMPLE = '2026-11-11T00:00:00'
+
+
+@dataclass(frozen=True)
+class Field:
+    name: str            # column name in the spreadsheet
+    label: str           # name shown on the page
+    required: bool       # must be given for every target (no default)
+    aliases: tuple       # column names recognised in uploaded files (case, spaces and underscores ignored)
+    help: str = ''
+
+
+FIELDS = (
+    Field('objname', 'Object name', True, ('name', 'object', 'target', 'obj', 'id', 'source', 'objectname', 'targetname'), 'letters, digits and - only, up to 100 characters'),
+    Field('RA', 'Right Ascension (hh:mm:ss.s or deg)', True, ('ra', 'raj2000', 'ra_deg', 'alpha', 'right ascension', 'ra(deg)', 'ra_hms')),
+    Field('De', 'Declination (±dd:mm:ss or deg)', True, ('de', 'dec', 'decj2000', 'dec_deg', 'delta', 'declination', 'dec(deg)', 'dec_dms')),
+    Field('obsmode', 'Observation mode', False, ('mode', 'observation mode', 'obs_mode')),
+    Field('specmode', 'Specmode', False, ('spec mode', 'spec_mode')),
+    Field('colormode', 'Colormode', False, ('color mode', 'color_mode', 'colourmode')),
+    Field('filter_', 'Deepmode / filter', False, ('filter', 'filters', 'deepmode', 'deep mode', 'band')),
+    Field('exptime', 'Exposure time per frame [s]', True, ('exp', 'exposure', 'exposure time', 'exptime_s', 't_exp', 'texp'), 'one number, 180 s at most (standard 100)'),
+    Field('count', 'Frames per filter', True, ('counts', 'n', 'nframes', 'frames', 'ncount', 'repeat', 'nexp'), 'one whole number (standard 3)'),
+    Field('Fixed_window(Start)', 'Fixed_window(Start)', False, ('obs_startdate', 'obs_starttime', 'start', 'startdate', 'start_date', 'obs_start', 'starttime', 'fixed_window_start', 'fixedwindowstart', 'window_start'), f'optional, UTC, e.g. {DATE_EXAMPLE}'),
+    Field('Fixed_window(End)', 'Fixed_window(End)', False, ('obs_enddate', 'obs_endtime', 'end', 'enddate', 'end_date', 'obs_end', 'endtime', 'fixed_window_end', 'fixedwindowend', 'window_end'), 'optional, UTC, e.g. 2026-12-01T00:00:00'),
+    Field('binning', 'Binning', False, ('bin',)),
+    Field('gain', 'Gain', False, ('egain',)),
+    Field('priority', 'Priority', False, ('prio',)),
+)
+FIELD_BY_NAME = {f.name: f for f in FIELDS}
+REQUIRED = tuple(f.name for f in FIELDS if f.required)
+SHORT_LABELS = {'objname': 'Object name', 'RA': 'RA', 'De': 'Dec', 'exptime': 'Exposure time', 'count': 'Frames'}
+FILE_COLUMNS = ('objname', 'RA', 'De', 'exptime', 'count', 'Fixed_window(Start)', 'Fixed_window(End)')   # the columns a request file / the table may carry
+HIDDEN_COLUMNS = ('note', 'comment', 'weight', 'is_ToO', 'is_rapidToO', 'objtype')
+SHEET_COLUMNS = tuple(f.name for f in FIELDS) + HIDDEN_COLUMNS
+LABELS = {f.name: f.label for f in FIELDS}
+IGNORE = '(ignore)'
+
+
+def _norm(text) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(text).lower())
+
+
+ALIAS_MAP = {}
+for _f in FIELDS:
+    if _f.name in FILE_COLUMNS:                       # the observation mode and the fixed values come from the page, never from a file
+        for _a in (_f.name,) + _f.aliases:
+            ALIAS_MAP.setdefault(_norm(_a), _f.name)
+
+
+@dataclass
+class TriggerSettings:
+    spreadsheet_url: str = ''
+    period: str = ''
+    obsmodes: tuple = ('Spec', 'Color', 'Deep', 'Single', 'Search')
+    specmodes: tuple | None = None
+    colormodes: tuple | None = None            # None: the colormode files of the TCSpy folder (public list)
+    deepmodes: tuple = ('g', 'r', 'i')
+    default_exptime: float = 100.0
+    max_exptime: float = 180.0
+    default_count: int = 3
+    default_binning: int = 1
+    default_gain: int = 2750
+    priority: int = 50
+    gain_table: list = field(default_factory=list)
+    hidden: dict = field(default_factory=lambda: {'note': 'None', 'weight': 1, 'is_ToO': 0, 'is_rapidToO': 0, 'objtype': 'Open'})
+
+    @classmethod
+    def load(cls, path: Path | str = TRIGGER_JSON) -> 'TriggerSettings':
+        raw = json.loads(Path(path).read_text())
+        kw = {}
+        for name in ('spreadsheet_url', 'period', 'default_exptime', 'max_exptime', 'default_count', 'default_binning', 'default_gain', 'priority', 'gain_table', 'hidden'):
+            if name in raw:
+                kw[name] = raw[name]
+        for name in ('obsmodes', 'deepmodes'):
+            if raw.get(name):
+                kw[name] = tuple(str(x) for x in raw[name])
+        kw['specmodes'] = tuple(str(x) for x in raw['specmodes']) if raw.get('specmodes') else None
+        kw['colormodes'] = tuple(str(x) for x in raw['colormodes']) if raw.get('colormodes') else None
+        return cls(**kw)
+
+    def spec_options(self, specmodes: dict | None = None) -> list:
+        if self.specmodes:
+            return list(self.specmodes)
+        return public_submodes('Spec', specmodes if specmodes is not None else load_specmodes())
+
+    def color_options(self, colormodes: dict | None = None) -> list:
+        if self.colormodes:
+            return list(self.colormodes)
+        return public_submodes('Color', colormodes if colormodes is not None else load_colormodes())
+
+    def worksheet_name(self, project_id: str) -> str:
+        return f'{self.period}_{safe_project_id(project_id)}'
+
+
+def safe_project_id(project_id) -> str:
+    return re.sub(r'[^A-Za-z0-9_\-]+', '_', str(project_id or '').strip()).strip('_')
+
+
+# ------------------------------------------------------------------ uploaded tables
+def read_table(data: bytes | str, filename: str = '') -> pd.DataFrame:
+    """CSV / TSV / whitespace-separated text with a header line (a leading '#' on the header is allowed)."""
+    text = data.decode('utf-8-sig', errors='replace') if isinstance(data, bytes) else str(data)
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        raise ValueError('The file is empty')
+    if lines[0].lstrip().startswith('#'):
+        lines[0] = lines[0].lstrip('#').strip()
+    lines = [l for l in lines if not l.lstrip().startswith('#')]
+    head = lines[0]
+    sep = ',' if ',' in head else ('\t' if '\t' in head else r'\s+')
+    df = pd.read_csv(io.StringIO('\n'.join(lines)), sep=sep, dtype=str, engine='python', skipinitialspace=True, keep_default_na=False)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.loc[:, [c for c in df.columns if c and not c.startswith('Unnamed')]]
+    return df.fillna('')
+
+
+def recognise_columns(columns) -> tuple[dict, list]:
+    """{file column: field name} for the columns that match a field or an alias; the rest in a list."""
+    mapping, unknown = {}, []
+    for c in columns:
+        target = ALIAS_MAP.get(_norm(c))
+        if target and target not in mapping.values():
+            mapping[c] = target
+        else:
+            unknown.append(c)
+    return mapping, unknown
+
+
+def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    """Keep the mapped columns under their field names (columns mapped to IGNORE or unmapped are dropped)."""
+    keep = {c: f for c, f in mapping.items() if f and f != IGNORE and c in df.columns}
+    out = df[list(keep)].rename(columns=keep)
+    return out.loc[:, ~out.columns.duplicated()].fillna('')
+
+
+# ------------------------------------------------------------------ modes
+def n_orders(obsmode: str, submode: str | None, cfg: dict | None = None) -> int:
+    """How many filters each unit observes in sequence (exposure time and count are given per order)."""
+    om = request_obsmode(obsmode, submode, cfg)
+    return max(om.n_filters_per_unit, 1) if om is not None else 1
+
+
+def request_obsmode(obsmode: str, submode: str | None, cfg: dict | None = None) -> ObsMode | None:
+    """The ObsMode of a request (for the mode figure, the ETC and the overhead): None when it cannot be built."""
+    filtinfo = (cfg or {}).get('filtinfo') or load_filtinfo()
+    specmodes = (cfg or {}).get('specmodes') or load_specmodes()
+    colormodes = (cfg or {}).get('colormodes') or load_colormodes()
+    sub = str(submode or '').strip()
+    try:
+        if obsmode == 'Spec' and sub:
+            return resolve_obsmode('Spec', sub, filtinfo=filtinfo, specmodes=specmodes, colormodes=colormodes)
+        if obsmode == 'Color' and sub:
+            if sub in colormodes:
+                return resolve_obsmode('Color', sub, filtinfo=filtinfo, specmodes=specmodes, colormodes=colormodes)
+            filters = [f for f in sub]                                    # e.g. 'gi': one filter per unit, alternating
+            table, k = {}, 0
+            for unit, installed in filtinfo.items():
+                options = [f for f in filters if f in installed]
+                if options:
+                    table[unit] = [options[k % len(options)]]
+                    k += 1
+            return ObsMode(mode='Color', submode=sub, filters_by_unit=table) if table else None
+        if obsmode in ('Deep', 'Single', 'Search') and sub:
+            return resolve_obsmode('Deep', sub, filtinfo=filtinfo, specmodes=specmodes, colormodes=colormodes)
+    except ValueError:
+        return None
+    return None
+
+
+# ------------------------------------------------------------------ validation
+@dataclass
+class Issue:
+    row: int             # 1-based row number of the target table
+    field: str
+    level: str           # 'error' | 'warning'
+    message: str
+
+    def __str__(self) -> str:
+        return f'Row {self.row}, {LABELS.get(self.field, self.field)}: {self.message}'
+
+
+def parse_number(value, kind: str) -> tuple[float | int | None, str | None]:
+    """A single number ('float' or 'int'); lists such as '100,100' are rejected."""
+    text = str(value if value is not None else '').strip()
+    if not text:
+        return None, 'required'
+    if ',' in text or ';' in text or ' ' in text:
+        return None, 'one value only (no lists)'
+    try:
+        v = float(text)
+    except ValueError:
+        return None, f'not a number: {text}'
+    if kind == 'int':
+        if v != int(v):
+            return None, 'must be a whole number'
+        return int(v), None
+    return v, None
+
+
+def parse_date(value) -> tuple[datetime | None, str | None]:
+    text = str(value or '').strip()
+    if text.lower() in ('', 'none', 'nan', 'null'):
+        return None, None
+    for fmt in (DATE_FORMAT, '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt), None
+        except ValueError:
+            continue
+    return None, f'use the UTC format {DATE_EXAMPLE}'
+
+
+def _blank(value) -> bool:
+    return value is None or str(value).strip() == '' or str(value).strip().lower() == 'nan'
+
+
+def validate_rows(rows: list, settings: TriggerSettings, defaults: dict, cfg: dict | None = None, survey: bool = False) -> tuple[list, list]:
+    """
+    rows: dicts with spreadsheet column names (strings as typed); blank cells take `defaults` (the page's
+    observation settings: obsmode, specmode, colormode, filter_, exptime, count, Fixed_window(Start), Fixed_window(End),
+    binning, gain). Returns (normalised rows, issues). A normalised row carries RA_deg / De_deg and the
+    exptime / count lists next to the text values.
+    """
+    filtinfo = (cfg or {}).get('filtinfo') or load_filtinfo()
+    installed = installed_filters(filtinfo)
+    spec_options = settings.spec_options((cfg or {}).get('specmodes'))
+    out, issues = [], []
+    for i, raw in enumerate(rows, start=1):
+        row = {}
+        for f in FIELDS:
+            v = raw.get(f.name)
+            row[f.name] = str(v).strip() if not _blank(v) else str(defaults.get(f.name, '') if not _blank(defaults.get(f.name)) else '')
+        err = lambda fld, msg: issues.append(Issue(i, fld, 'error', msg))
+        warn = lambda fld, msg: issues.append(Issue(i, fld, 'warning', msg))
+        # object name: letters, digits and '-' only
+        if not row['objname']:
+            err('objname', 'required')
+        elif len(row['objname']) > 100:
+            err('objname', f'{len(row["objname"])} characters (maximum 100)')
+        elif not OBJNAME_PATTERN.match(row['objname']):
+            bad = sorted({c for c in row['objname'] if not (c.isalnum() and c.isascii()) and c != '-'})
+            err('objname', 'letters, digits and - only (no spaces or other symbols): ' + ' '.join(repr(c) for c in bad))
+        # coordinates (survey: the object name is a 7DS tile and the coordinates are the tile centre)
+        row['RA_deg'] = row['De_deg'] = None
+        if survey:
+            tid = normalise_tile_id(row['objname']) if row['objname'] else None
+            if row['objname'] and tid is None:
+                err('objname', 'must be a 7DS tile ID such as T01022 (survey request)')
+            elif tid is not None:
+                try:
+                    row['objname'] = tid
+                    row['RA_deg'], row['De_deg'] = tile_centre(tid)
+                    row['RA'], row['De'] = f'{row["RA_deg"]:.6f}', f'{row["De_deg"]:.6f}'
+                except ValueError as exc:
+                    err('objname', str(exc))
+        else:
+            if not row['RA']:
+                err('RA', 'required')
+            if not row['De']:
+                err('De', 'required')
+            if row['RA'] and row['De']:
+                try:
+                    row['RA_deg'], row['De_deg'] = parse_coordinates(row['RA'], row['De'])
+                except ValueError as exc:
+                    err('RA', str(exc))
+        # observation mode and its sub-mode
+        mode = next((m for m in settings.obsmodes if m.lower() == row['obsmode'].lower()), None)
+        if mode is None:
+            err('obsmode', f'must be one of {", ".join(settings.obsmodes)}' if row['obsmode'] else 'required')
+        row['obsmode'] = mode or row['obsmode']
+        if mode == 'Spec':
+            if row['specmode'] not in spec_options:
+                err('specmode', f'must be one of {", ".join(spec_options)}' if row['specmode'] else 'required for Spec')
+            row['colormode'] = row['filter_'] = ''
+        elif mode == 'Color':
+            color_options = settings.color_options((cfg or {}).get('colormodes'))
+            if row['colormode'] not in color_options:
+                err('colormode', f'must be one of {", ".join(color_options)}' if row['colormode'] else 'required for Color')
+            row['specmode'] = row['filter_'] = ''
+        elif mode == 'Deep':
+            if row['filter_'] not in settings.deepmodes:
+                err('filter_', f'must be one of {", ".join(settings.deepmodes)}' if row['filter_'] else 'required for Deep')
+            row['specmode'] = row['colormode'] = ''
+        elif mode in ('Single', 'Search'):
+            if row['filter_'] and row['filter_'] not in installed:
+                err('filter_', f'{row["filter_"]} is not installed in any unit')
+            row['specmode'] = row['colormode'] = ''
+        # exposure time and count: one number each, applied to every order of the mode
+        v, e = parse_number(row['exptime'], 'float')
+        row['exptime_s'] = v
+        if e:
+            err('exptime', e)
+        elif v <= 0:
+            err('exptime', 'must be positive')
+        elif v > settings.max_exptime:
+            err('exptime', f'above {settings.max_exptime:g} s')
+        elif v != settings.default_exptime:
+            warn('exptime', f'differs from the standard {settings.default_exptime:g} s; the depth model was fitted on {settings.default_exptime:g} s frames')
+        v, e = parse_number(row['count'], 'int')
+        row['count_n'] = v
+        if e:
+            err('count', e)
+        elif v < 1:
+            err('count', 'must be at least 1')
+        # dates
+        dates = {}
+        for fld in ('Fixed_window(Start)', 'Fixed_window(End)'):
+            d, e = parse_date(row[fld])
+            dates[fld] = d
+            if e:
+                err(fld, e)
+            row[fld] = d.strftime(DATE_FORMAT) if d else ''
+        if dates['Fixed_window(Start)'] and dates['Fixed_window(End)'] and dates['Fixed_window(End)'] <= dates['Fixed_window(Start)']:
+            err('Fixed_window(End)', 'must be after the start')
+        # binning, gain, priority
+        for fld, default, minimum in (('binning', settings.default_binning, 1), ('gain', settings.default_gain, 0)):
+            text = row[fld] or str(default)
+            try:
+                v = int(float(text))
+                if float(text) != v:
+                    raise ValueError
+                if v < minimum:
+                    err(fld, f'must be at least {minimum}')
+                row[fld] = str(v)
+            except ValueError:
+                err(fld, f'must be an integer: {text}')
+        row['priority'] = str(settings.priority)
+        out.append(row)
+    return out, issues
+
+
+def format_rows(rows: list, project_id: str, settings: TriggerSettings) -> list:
+    """Spreadsheet rows (strings) in SHEET_COLUMNS order from validated rows."""
+    out = []
+    for r in rows:
+        rec = {
+            'objname': r['objname'],
+            'RA': f'{r["RA_deg"]:.6f}' if r.get('RA_deg') is not None else r['RA'],
+            'De': f'{r["De_deg"]:.6f}' if r.get('De_deg') is not None else r['De'],
+            'obsmode': r['obsmode'], 'specmode': r['specmode'] or 'None', 'colormode': r['colormode'] or 'None', 'filter_': r['filter_'] or 'None',
+            'exptime': f'{r["exptime_s"]:g}' if r.get('exptime_s') is not None else r['exptime'],
+            'count': str(r['count_n']) if r.get('count_n') is not None else r['count'],
+            'Fixed_window(Start)': r['Fixed_window(Start)'] or 'None', 'Fixed_window(End)': r['Fixed_window(End)'] or 'None',
+            'binning': r['binning'], 'gain': r['gain'], 'priority': r['priority'],
+        }
+        hidden = dict(settings.hidden)
+        hidden['comment'] = safe_project_id(project_id)
+        for c in HIDDEN_COLUMNS:
+            rec[c] = str(hidden.get(c, ''))
+        out.append({c: rec.get(c, '') for c in SHEET_COLUMNS})
+    return out
+
+
+def sample_file(kind: str = 'Target') -> bytes:
+    if kind == 'Survey':
+        return (b'objname,exptime,count,Fixed_window(Start),Fixed_window(End)\n'
+                b'T01022,100,3,,\n'
+                b'T01023,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
+    return (b'objname,RA,De,exptime,count,Fixed_window(Start),Fixed_window(End)\n'
+            b'NGC0253,00:47:33.12,-25:17:17.6,100,3,,\n'
+            b'M31,10.68471,+41.26875,100,3,2026-11-11T00:00:00,2026-12-01T00:00:00\n')
+
+
+# ------------------------------------------------------------------ projects (keys and allocations)
+PROJECTS_JSON = DATA_DIR / 'projects.json'              # server-local, git-ignored: {"PROJECT_ID": {"key": "...", "allocated_hours": 30}}
+
+
+def load_projects(path: Path | str = PROJECTS_JSON) -> dict | None:
+    """The registered projects, or None when the file is absent (then any project is accepted without a key)."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text())
+    return {safe_project_id(k): v for k, v in raw.items() if not str(k).startswith('_')}
+
+
+def check_project(project_id: str, key: str, projects: dict | None) -> tuple[bool, str, float | None]:
+    """(accepted, message, allocated hours). Without a project list every ID is accepted."""
+    ok, msg, hours, _ = check_project_entry(project_id, key, projects)
+    return ok, msg, hours
+
+
+def check_project_entry(project_id: str, key: str, projects: dict | None) -> tuple[bool, str, float | None, dict | None]:
+    """Like check_project, plus the project's entry (observation type, mode, sky background, ...) when accepted."""
+    pid = safe_project_id(project_id)
+    if not pid:
+        return False, 'Enter the Project ID.', None, None
+    if projects is None:
+        return True, 'Project list not configured on this server: no key check.', None, None
+    entry = projects.get(pid)
+    if entry is None:
+        return False, f'Unknown Project ID {pid}.', None, None
+    if str(entry.get('key', '')) != str(key or ''):
+        return False, 'The Project key does not match.', None, None
+    hours = entry.get('allocated_hours')
+    return True, 'Project recognised.', float(hours) if hours is not None else None, {k: v for k, v in entry.items() if k != 'key'}
+
+
+def total_time(rows: list, obsmode, config=None) -> dict:
+    """
+    Exposure and observation time of validated rows with the mode: open-shutter seconds (per unit,
+    exptime x frames x filters per unit) and the total with overheads from the overhead model.
+    """
+    from . import overhead as oh
+    good = [r for r in rows if r.get('exptime_s') is not None and r.get('count_n') is not None]
+    n_per_unit = max(obsmode.n_filters_per_unit, 1) if obsmode is not None else 1
+    exposure = sum(float(r['exptime_s']) * int(r['count_n']) * n_per_unit for r in good)
+    total, lines, overhead_s = exposure, [], 0.0
+    if obsmode is not None and good:
+        cfg = config or oh.OverheadConfig.load()
+        reqs = [oh.ObsRequest(r['objname'] or f'row {i}', float(r['exptime_s']), int(r['count_n']), obsmode, 'per_filter', config=cfg) for i, r in enumerate(good, start=1)]
+        result = oh.estimate(reqs, cfg)
+        total, overhead_s, lines = result.total, result.overhead, result.summary_lines()
+    return {'n_targets': len(good), 'exposure_s': exposure, 'overhead_s': overhead_s, 'total_s': total, 'lines': lines}

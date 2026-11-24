@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import astropy.units as u
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import math
 import numpy as np
 from astroplan import Observer
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body, get_sun
@@ -595,3 +596,165 @@ def plot_monthly_interactive(m: MonthlyVisibility, site: Site | None = None, sho
                       legend=dict(orientation='h', yanchor='bottom', y=-0.16, xanchor='left', x=0, font=dict(size=11)),
                       title=dict(text=f'{site.name} observable hours, from {m.dates[0]:%Y-%m-%d} to {m.dates[-1] + timedelta(days=1):%Y-%m-%d}', font=dict(size=15)))
     return fig
+
+
+def night_summary(r: VisibilityResult) -> dict:
+    """Status of a target over the whole night (no requested time): observable windows or the reason why not."""
+    c = r.constraints
+    night = r.sun_alt <= c.sun_alt
+    alt_ok = night & (r.alt >= c.min_alt) & (r.alt <= c.max_alt)
+    if r.windows:
+        status, reason = 'OK', ''
+    elif not alt_ok.any():
+        status, reason = 'WARNING', f'never above {c.min_alt:g}° during the night'
+    elif not (alt_ok & (r.moon_sep >= c.moon_sep)).any():
+        status, reason = 'WARNING', f'Moon closer than {c.moon_sep:g}°'
+    else:
+        status, reason = 'WARNING', 'not observable'
+    sep_night = r.moon_sep[night] if night.any() else r.moon_sep
+    return {'target': r.target.label, 'status': status, 'observable_hours': round(r.observable_hours, 1),
+            'windows': r.window_text(), 'max_alt_deg': round(r.max_alt, 1),
+            'max_alt_time_utc': r.max_alt_time.iso[:16] if r.max_alt_time is not None else '',
+            'moon_sep_deg': f'{sep_night.min():.0f}-{sep_night.max():.0f}', 'moon_illumination': round(r.moon_illumination, 2),
+            'note': reason}
+
+
+# ------------------------------------------------------------------ observing season (altitude only, a year of nights)
+SIDEREAL_DEG_PER_HOUR = 360.0 / 23.9344696
+
+
+@dataclass
+class SeasonGrid:
+    """Twilight times and sidereal times of consecutive nights, target-independent (built once per site and year)."""
+    dates: list
+    start_jd: np.ndarray        # evening twilight [JD]
+    end_jd: np.ndarray          # morning twilight [JD]
+    lst_start_deg: np.ndarray   # local sidereal time at evening twilight
+    latitude: float
+
+
+def season_grid(start_night: date, site: Site | None = None, constraints: Constraints | None = None, n_nights: int = 366) -> SeasonGrid:
+    site = site or load_site()
+    constraints = constraints or Constraints.from_config()
+    observer = make_observer(site)
+    tz = ZoneInfo(site.timezone)
+    dates = [start_night + timedelta(days=i) for i in range(n_nights)]
+    noons = Time([datetime.combine(d, dtime(12, 0), tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None) for d in dates])
+    evening = observer.sun_set_time(noons, which='next', horizon=constraints.sun_alt * u.deg, n_grid_points=60)
+    morning = observer.sun_rise_time(evening, which='next', horizon=constraints.sun_alt * u.deg, n_grid_points=60)
+    lst = observer.local_sidereal_time(evening).deg
+    return SeasonGrid(dates=dates, start_jd=np.asarray(evening.jd, float), end_jd=np.asarray(morning.jd, float),
+                      lst_start_deg=np.asarray(lst, float), latitude=site.latitude)
+
+
+def hours_above(grid: SeasonGrid, ra_deg, dec_deg, min_alt: float = 30.0) -> np.ndarray:
+    """
+    Hours per night (rows: nights, columns: targets) during which the target is above `min_alt`, from the
+    hour-angle limit of the altitude and the night's span in sidereal time (no refraction, no Moon).
+    """
+    ra = np.atleast_1d(np.asarray(ra_deg, float)); dec = np.radians(np.atleast_1d(np.asarray(dec_deg, float)))
+    phi = math.radians(grid.latitude)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos_h0 = (math.sin(math.radians(min_alt)) - math.sin(phi) * np.sin(dec)) / (math.cos(phi) * np.cos(dec))
+    h0 = np.degrees(np.arccos(np.clip(cos_h0, -1.0, 1.0)))                     # half-width of the window above min_alt [deg]
+    h0 = np.where(cos_h0 >= 1.0, 0.0, np.where(cos_h0 <= -1.0, 180.0, h0))
+    span = (grid.end_jd - grid.start_jd) * 24.0 * SIDEREAL_DEG_PER_HOUR          # night length in sidereal degrees
+    h_start = (grid.lst_start_deg[:, None] - ra[None, :] + 180.0) % 360.0 - 180.0   # hour angle at evening twilight, (-180, 180]
+    h_end = h_start + span[:, None]
+    total = np.zeros_like(h_start)
+    for k in (-1, 0, 1, 2):                                                     # windows around the transits reachable during the night
+        lo = np.maximum(h_start, -h0[None, :] + 360.0 * k)
+        hi = np.minimum(h_end, h0[None, :] + 360.0 * k)
+        total += np.clip(hi - lo, 0.0, None)
+    return total / SIDEREAL_DEG_PER_HOUR
+
+
+def observing_season(grid: SeasonGrid, ra_deg: float, dec_deg: float, min_alt: float = 30.0, min_hours: float = 0.5) -> dict:
+    """
+    When a target is observable (at least `min_hours` above `min_alt` during the night) over the grid's year,
+    seen from its first night: the current or next run of observable nights, its end, and the number of
+    observable nights in the year.
+    """
+    hours = hours_above(grid, [ra_deg], [dec_deg], min_alt)[:, 0]
+    ok = hours >= min_hours
+    n_nights = int(ok.sum())
+    out = {'observable_tonight': bool(ok[0]), 'nights_per_year': n_nights, 'hours_tonight': float(hours[0]),
+           'max_hours': float(hours.max()), 'start': None, 'end': None, 'next_start': None}
+    if n_nights == 0:
+        return out
+    if ok.all():
+        out['start'], out['end'] = grid.dates[0], grid.dates[-1]
+        out['always'] = True
+        return out
+    idx = np.flatnonzero(ok)
+    if ok[0]:                                                        # observable now: the run ends at the first gap
+        gap = np.flatnonzero(~ok)[0]
+        out['start'], out['end'] = grid.dates[0], grid.dates[gap - 1]
+        later = idx[idx > gap]
+        out['next_start'] = grid.dates[later[0]] if later.size else None
+    else:                                                            # not yet: the next run
+        first = idx[0]
+        gap_after = np.flatnonzero(~ok[first:])
+        last = first + gap_after[0] - 1 if gap_after.size else len(ok) - 1
+        out['start'], out['end'] = grid.dates[first], grid.dates[last]
+    return out
+
+
+def _hour_angles(grid: SeasonGrid, ra_deg, dec_deg):
+    """Hour angle (deg) at evening and morning twilight for every night (rows) and target (columns)."""
+    ra = np.atleast_1d(np.asarray(ra_deg, float))
+    dec = np.radians(np.atleast_1d(np.asarray(dec_deg, float)))
+    span = (grid.end_jd - grid.start_jd) * 24.0 * SIDEREAL_DEG_PER_HOUR
+    h_start = (grid.lst_start_deg[:, None] - ra[None, :] + 180.0) % 360.0 - 180.0
+    return dec, h_start, h_start + span[:, None]
+
+
+def nightly_max_altitude(grid: SeasonGrid, ra_deg, dec_deg) -> dict:
+    """
+    The highest altitude each target reaches during each night (no refraction): arrays (nights, targets)
+    'max_alt' [deg], 'transit' (the transit itself falls inside the night, so the night's maximum is the
+    culmination altitude), 'at_hours' (hours after evening twilight of the maximum), plus the culmination
+    altitude of every target, 'culmination' (targets,).
+    """
+    dec, h_start, h_end = _hour_angles(grid, ra_deg, dec_deg)
+    phi = math.radians(grid.latitude)
+    before = h_end < 0.0                                    # the night ends before the transit
+    inside = (h_start <= 0.0) & (h_end >= 0.0)
+    after = h_start > 0.0                                   # the transit was before the night; the next one at 360
+    next_inside = after & (h_end >= 360.0)
+    use_start = after & ~next_inside & (h_start <= 360.0 - h_end)
+    use_end = (after & ~next_inside & ~use_start) | before
+    h_best = np.where(inside | next_inside, 0.0, np.where(use_start, h_start, np.where(use_end, h_end, 0.0)))
+    h_best = np.where(before, h_end, h_best)
+    alt = np.degrees(np.arcsin(np.clip(math.sin(phi) * np.sin(dec)[None, :] + math.cos(phi) * np.cos(dec)[None, :] * np.cos(np.radians(h_best)), -1.0, 1.0)))
+    offset = np.where(inside, -h_start, np.where(next_inside, 360.0 - h_start, np.where(use_start, 0.0, h_end - h_start)))
+    culmination = np.degrees(np.arcsin(np.clip(math.sin(phi) * np.sin(dec) + math.cos(phi) * np.cos(dec), -1.0, 1.0)))
+    return {'max_alt': alt, 'transit': inside | next_inside, 'at_hours': offset / SIDEREAL_DEG_PER_HOUR, 'culmination': culmination}
+
+
+def intervals_above(grid: SeasonGrid, ra_deg, dec_deg, min_alt: float = 30.0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Start and end of the (up to 4) intervals per night during which each target is above `min_alt`, in
+    hours after evening twilight: two arrays (nights, targets, 4), NaN where there is no interval.
+    """
+    dec, h_start, h_end = _hour_angles(grid, ra_deg, dec_deg)
+    phi = math.radians(grid.latitude)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos_h0 = (math.sin(math.radians(min_alt)) - math.sin(phi) * np.sin(dec)) / (math.cos(phi) * np.cos(dec))
+    h0 = np.degrees(np.arccos(np.clip(cos_h0, -1.0, 1.0)))
+    h0 = np.where(cos_h0 >= 1.0, 0.0, np.where(cos_h0 <= -1.0, 180.0, h0))
+    starts = np.full(h_start.shape + (4,), np.nan)
+    ends = np.full(h_start.shape + (4,), np.nan)
+    for j, k in enumerate((-1, 0, 1, 2)):
+        lo = np.maximum(h_start, -h0[None, :] + 360.0 * k)
+        hi = np.minimum(h_end, h0[None, :] + 360.0 * k)
+        ok = (hi - lo) > 1e-9
+        starts[..., j] = np.where(ok, (lo - h_start) / SIDEREAL_DEG_PER_HOUR, np.nan)
+        ends[..., j] = np.where(ok, (hi - h_start) / SIDEREAL_DEG_PER_HOUR, np.nan)
+    return starts, ends
+
+
+def moon_illumination_nights(grid: SeasonGrid) -> np.ndarray:
+    """Illuminated fraction of the Moon at the middle of every night of the grid."""
+    from astroplan import moon_illumination
+    return np.asarray(moon_illumination(Time(0.5 * (grid.start_jd + grid.end_jd), format='jd')), float)

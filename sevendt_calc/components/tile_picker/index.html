@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  body { margin: 0; font-family: "Source Sans Pro", sans-serif; color: #31333F; }
+  #status { font-size: 14px; margin: 2px 0 4px 4px; }
+  #status b { font-weight: 600; }
+  .annotation-text, .annotation { pointer-events: none; }   /* tile labels never swallow a click */
+  #plot .nsewdrag { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="status"></div>
+<div id="plot"></div>
+<script>
+// Minimal Streamlit component protocol (no build step): ready / render / setComponentValue / setFrameHeight.
+function send(type, extra) { window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, extra || {}), '*'); }
+function setValue(value) { send('streamlit:setComponentValue', {value: value, dataType: 'json'}); }
+function setHeight(h) { send('streamlit:setFrameHeight', {height: h}); }
+
+const COLORS = {
+  matched:  {line: 'rgba(214,39,40,0.95)',  fill: 'rgba(214,39,40,0.22)',  width: 3.5, label: '#b22222'},
+  edge:     {line: 'rgba(255,140,0,0.95)',  fill: 'rgba(255,140,0,0.22)',  width: 3.5, label: '#cc6a00'},
+  excluded: {line: 'rgba(120,120,120,0.9)', fill: 'rgba(120,120,120,0.15)', width: 2.5, label: '#666666'},
+  added:    {line: 'rgba(44,160,44,0.95)',  fill: 'rgba(44,160,44,0.22)',  width: 4.0, label: '#1f7a1f'},
+  plain:    {line: 'rgba(31,119,180,0.8)',  fill: 'rgba(31,119,180,0.10)', width: 1.5, label: 'rgba(31,119,180,0.9)'},
+};
+let state = null;          // {ids, info, excluded:Set, added:Set, lastArgsKey}
+
+function styleOf(tid) {
+  const inf = state.info[tid];
+  if (inf.matched) return state.excluded.has(tid) ? COLORS.excluded : (inf.nearEdge ? COLORS.edge : COLORS.matched);
+  return state.added.has(tid) ? COLORS.added : COLORS.plain;
+}
+function labelOf(tid) {
+  const inf = state.info[tid];
+  if (inf.matched) return state.excluded.has(tid) ? `<b>${tid}</b><br>excluded` : `<b>${tid}</b>` + (inf.overlapText ? `<br>${inf.overlapText}` : '');
+  return state.added.has(tid) ? `<b>${tid}</b><br>added` : tid;
+}
+function chosen() {
+  const out = state.ids.filter(t => state.info[t].matched && !state.excluded.has(t));
+  return out.concat(Array.from(state.added).sort());
+}
+function updateStatus() {
+  const n = chosen().length;
+  const parts = [`<b>${n} tile(s) selected</b>`];
+  if (state.excluded.size) parts.push(`${state.excluded.size} excluded`);
+  if (state.added.size) parts.push(`${state.added.size} added`);
+  document.getElementById('status').innerHTML = parts.join(' · ') + ' — click a tile to exclude or add it, click again to undo';
+}
+let publishTimer = null;
+function publish() {                                   // send the whole selection once the clicks settle (fewer reruns, last state wins)
+  if (publishTimer) clearTimeout(publishTimer);
+  publishTimer = setTimeout(() => { publishTimer = null;
+    setValue({excluded: Array.from(state.excluded).sort(), added: Array.from(state.added).sort(), chosen: chosen(), n: Date.now()}); }, 250);
+}
+function pointInPolygon(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function tileAt(x, y, polys, centers) {               // the tile under a data-space point; overlaps resolved by the nearest centre
+  let best = null, bestD = Infinity;
+  for (const tid of state.ids) {
+    if (!pointInPolygon(x, y, polys[tid])) continue;
+    const c = centers[tid], d = (c[0] - x) ** 2 + (c[1] - y) ** 2;
+    if (d < bestD) { bestD = d; best = tid; }
+  }
+  return best;
+}
+function toggle(gd, tid) {
+  const inf = state.info[tid];
+  if (inf.matched) { if (state.excluded.has(tid)) state.excluded.delete(tid); else state.excluded.add(tid); }
+  else { if (state.added.has(tid)) state.added.delete(tid); else state.added.add(tid); }
+  const st = styleOf(tid); const i = state.ids.indexOf(tid);
+  Plotly.restyle(gd, {fillcolor: st.fill, 'line.color': st.line, 'line.width': st.width}, [i]);
+  Plotly.relayout(gd, {[`annotations[${i}].text`]: labelOf(tid), [`annotations[${i}].font.color`]: st.label});
+  updateStatus();
+  publish();
+}
+
+function draw(args) {
+  const gd = document.getElementById('plot');
+  state = {ids: args.ids, info: args.info, polys: args.polys, centers: args.centers, excluded: new Set(args.excluded || []), added: new Set(args.added || [])};
+  const traces = [], annotations = [];
+  state.ids.forEach((tid, i) => {
+    const poly = args.polys[tid]; const st = styleOf(tid);
+    traces.push({x: poly.map(p => p[0]), y: poly.map(p => p[1]), mode: 'lines', fill: 'toself', fillcolor: st.fill,
+                 line: {color: st.line, width: st.width}, hoveron: 'fills', name: tid, showlegend: false, text: tid,
+                 hovertemplate: `<b>${tid}</b><br>${args.info[tid].hover}<extra></extra>`});
+    const c = args.centers[tid];
+    annotations.push({x: c[0], y: c[1], text: labelOf(tid), showarrow: false, font: {size: args.info[tid].matched ? 11 : 9, color: st.label}});
+  });
+  if (args.shape) traces.push({x: args.shape.map(p => p[0]), y: args.shape.map(p => p[1]), mode: 'lines', line: {color: 'green', dash: 'dash', width: 1.5}, hoverinfo: 'skip', showlegend: false});
+  traces.push({x: [0], y: [0], mode: 'markers', marker: {symbol: 'star', size: 16, color: 'green', line: {color: 'black', width: 0.5}}, hoverinfo: 'skip', showlegend: false});
+  const e = args.extent;
+  const layout = {
+    title: {text: args.title, font: {size: 13}}, annotations: annotations,
+    xaxis: {title: 'East offset [deg]', range: [e, -e], zeroline: false, gridcolor: '#e6e6e6', constrain: 'domain'},
+    yaxis: {title: 'North offset [deg]', range: [-e, e], zeroline: false, gridcolor: '#e6e6e6', scaleanchor: 'x', scaleratio: 1},
+    plot_bgcolor: 'white', height: 540, margin: {l: 50, r: 20, t: 50, b: 50}, hovermode: 'closest', dragmode: 'pan', hoverdistance: 40,
+  };
+  Plotly.newPlot(gd, traces, layout, {displaylogo: false, scrollZoom: true, responsive: true, doubleClick: false, modeBarButtonsToRemove: ['select2d', 'lasso2d']});
+  // Clicks are resolved from the pixel position (not from Plotly's hover state, which lags behind the pointer and
+  // ignores clicks on labels): a press and release within a few pixels toggles the tile under the pointer.
+  // Plotly's drag layer moves the pointer onto a full-window cover on mousedown, so the release is caught on the
+  // document (capture phase) and matched with a press that started inside the plot.
+  if (!window._tileHandlers) {
+    window._tileHandlers = true;
+    let down = null;
+    document.addEventListener('mousedown', e => { down = gd.contains(e.target) ? [e.clientX, e.clientY] : null; }, true);
+    document.addEventListener('mouseup', e => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+      if (moved > 5 || !state || !gd._fullLayout) return;
+      const fl = gd._fullLayout, bb = gd.getBoundingClientRect();
+      const x = fl.xaxis.p2d(e.clientX - bb.left - fl.xaxis._offset), y = fl.yaxis.p2d(e.clientY - bb.top - fl.yaxis._offset);
+      const tid = tileAt(x, y, state.polys, state.centers);
+      if (tid) toggle(gd, tid);
+    }, true);
+  }
+  updateStatus();
+  setHeight(document.body.scrollHeight + 10);
+}
+
+let lastKey = null;
+window.addEventListener('message', ev => {
+  const d = ev.data;
+  if (!d || d.type !== 'streamlit:render') return;
+  const args = d.args || {};
+  // The map is drawn once per match (a new match gets a new component key). Later renders carry the selection
+  // Python knew when the run started, which lags one click behind the browser, so the local state is kept.
+  const key = JSON.stringify([args.ids, args.polys, args.shape, args.title]);
+  if (key !== lastKey) { lastKey = key; draw(args); }
+});
+send('streamlit:componentReady', {apiVersion: 1});
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; font-family: "Source Sans Pro", sans-serif; color: #31333F; }
+  .label { font-size: 14px; margin: 0 0 6px 0; display: flex; align-items: center; gap: 6px; }
+  .help { color: #888; font-size: 12px; cursor: help; border: 1px solid #bbb; border-radius: 50%; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
+  .box { display: flex; align-items: center; background: #f0f2f6; border: 1px solid #f0f2f6; border-radius: 8px; height: 40px; padding: 0 10px; box-sizing: border-box; }
+  .box:focus-within { border-color: #ff4b4b; }
+  input { flex: 1; border: none; background: transparent; font-size: 16px; font-family: inherit; color: #31333F; outline: none; min-width: 0; }
+  input::placeholder { color: #a3a8b4; }
+  button { border: none; background: transparent; color: #808495; cursor: pointer; font-size: 13px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="label"><span id="label"></span><span id="help" class="help" style="display:none">?</span></div>
+<div class="box"><input id="inp" autocomplete="off"><button id="toggle" style="display:none">show</button></div>
+<script>
+function send(type, extra) { window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, extra || {}), '*'); }
+const inp = document.getElementById('inp'), toggle = document.getElementById('toggle');
+let timer = null, lastSent = null, initialised = false;
+function publish(now) {
+  if (timer) clearTimeout(timer);
+  const fire = () => { timer = null; if (inp.value !== lastSent) { lastSent = inp.value; send('streamlit:setComponentValue', {value: inp.value, dataType: 'json'}); } };
+  if (now) fire(); else timer = setTimeout(fire, 350);      // a short pause after typing (a pasted value arrives at once)
+}
+inp.addEventListener('input', () => publish(false));
+inp.addEventListener('paste', () => setTimeout(() => publish(true), 0));
+inp.addEventListener('keydown', e => { if (e.key === 'Enter') publish(true); });
+inp.addEventListener('blur', () => publish(true));
+toggle.addEventListener('click', () => { const pw = inp.type === 'password'; inp.type = pw ? 'text' : 'password'; toggle.textContent = pw ? 'hide' : 'show'; });
+window.addEventListener('message', ev => {
+  const d = ev.data; if (!d || d.type !== 'streamlit:render') return;
+  const a = d.args || {};
+  document.getElementById('label').textContent = a.label || '';
+  const help = document.getElementById('help'); if (a.help) { help.style.display = 'inline-flex'; help.title = a.help; }
+  inp.placeholder = a.placeholder || '';
+  if (!initialised) { inp.type = a.password ? 'password' : 'text'; if (a.password) toggle.style.display = 'inline'; initialised = true; }
+  if (document.activeElement !== inp && typeof a.value === 'string' && a.value !== inp.value) { inp.value = a.value; lastSent = a.value; }
+  send('streamlit:setFrameHeight', {height: document.body.scrollHeight + 4});
+});
+send('streamlit:componentReady', {apiVersion: 1});
+</script>
+</body>
+</html>

@@ -29,12 +29,13 @@ YELLOW = 'background-color: #fff3b0; color: #000000'
 
 
 FEEDBACK_EMAIL = 'hhchoi1022@gmail.com'
+FEEDBACK_NAME = 'Hyeonho Choi'
 
 
 def feedback_note():
     """A small line at the very top of every page: where to report problems and send feedback."""
-    st.markdown(f"<div style='font-size:0.78rem;color:#777;margin-bottom:-0.6rem'>Problems or any feedback: "
-                f"<a href='mailto:{FEEDBACK_EMAIL}'>{FEEDBACK_EMAIL}</a></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:0.78rem;color:#777;margin-bottom:-0.6rem'>Problems or any feedback: {FEEDBACK_NAME} "
+                f"(<a href='mailto:{FEEDBACK_EMAIL}'>{FEEDBACK_EMAIL}</a>)</div>", unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -517,3 +518,123 @@ def target_spectrum_box(uploads: list, prefix: str, sample: bytes | None = None,
                 c1.file_uploader(f'Spectrum file of {t.label}', type=SPECTRUM_FILE_TYPES, key=f'{prefix}_spec_{t.row}', label_visibility='collapsed')
                 c2.radio('Flux unit of the file', FLUX_UNIT_LABELS, key=f'{prefix}_spec_unit_{t.row}', label_visibility='collapsed')
             st.caption('A file chosen in a row overrides a bulk file. With a magnitude the file is scaled to it; without one its own flux is used.')
+
+
+# ------------------------------------------------------------------ tile picker (custom component)
+_TILE_PICKER = None
+
+
+def tile_picker(match, excluded=None, added=None, key: str = 'tile_picker'):
+    """
+    Clickable tile map drawn in the browser (Plotly.js): clicks toggle tiles locally and only the selection is sent back.
+    Returns {'excluded': [...], 'added': [...], 'chosen': [...]} after the first click, else None.
+    """
+    global _TILE_PICKER
+    import math
+    import streamlit.components.v1 as components
+    if _TILE_PICKER is None:
+        _TILE_PICKER = components.declare_component('tile_picker', path=str(Path(__file__).resolve().parent / 'sevendt_calc' / 'components' / 'tile_picker'))
+    matched = {t.id: t for t in match.tiles}
+    extent = max(1.6, match.radius_deg * 1.4 + 0.9)
+    ids, polys, centers, info = [], {}, {}, {}
+    for tid, poly in match.polygons.items():
+        cx, cy = poly.centroid.x, poly.centroid.y
+        if tid not in matched and not (abs(cx) < extent and abs(cy) < extent):
+            continue
+        t = matched.get(tid)
+        x, y = poly.exterior.xy
+        ids.append(tid)
+        polys[tid] = [[round(float(a), 5), round(float(b), 5)] for a, b in zip(x, y)]
+        centers[tid] = [round(float(cx), 5), round(float(cy), 5)]
+        if t is None:
+            hover = 'not matched: click to add'
+            info[tid] = {'matched': False, 'nearEdge': False, 'overlapText': '', 'hover': hover}
+        else:
+            overlap = '' if t.contains_target or t.overlap_fraction is None else f'{100 * t.overlap_fraction:.0f} %'
+            hover = ('contains the target' if t.contains_target else f'{overlap} of the tile inside the area') + '<br>click to exclude / include'
+            info[tid] = {'matched': True, 'nearEdge': bool(t.near_edge), 'overlapText': overlap, 'hover': hover}
+    shape = [[round(float(a), 5), round(float(b), 5)] for a, b in zip(*match.shape.exterior.xy)] if match.shape is not None else None
+    title = f'RA {match.ra:.4f}, Dec {match.dec:+.4f}'
+    if match.ellipse is not None:
+        title += f' — ellipse {match.ellipse[0]:g}° x {match.ellipse[1]:g}°, PA {match.ellipse[2]:g}°'
+    elif match.radius_deg > 0:
+        title += f' — radius {match.radius_deg:g}°'
+    return _TILE_PICKER(ids=ids, polys=polys, centers=centers, info=info, shape=shape, extent=extent, title=title,
+                        excluded=sorted(excluded or []), added=sorted(added or []), key=key, default=None)
+
+
+# ------------------------------------------------------------------ observing season (a year of twilights, built once per day)
+_SEASON_GRIDS: dict = {}
+_SEASON_LOCK = threading.Lock() if 'threading' in dir() else None
+
+
+def season_grid_for(site, cons, start_night, n_nights: int = 366) -> 'vis.SeasonGrid':
+    """The twilight grid of `n_nights` nights for the site from `start_night`, computed once per server and day (about 7 s)."""
+    import threading as _threading
+    global _SEASON_LOCK
+    if _SEASON_LOCK is None:
+        _SEASON_LOCK = _threading.Lock()
+    key = (site_key(site), cons.sun_alt, start_night, n_nights)
+    grid = _SEASON_GRIDS.get(key)
+    if grid is not None:
+        return grid
+    with _SEASON_LOCK:
+        grid = _SEASON_GRIDS.get(key)
+        if grid is None:
+            grid = vis.season_grid(start_night, site, cons, n_nights)
+            for old in [k for k in _SEASON_GRIDS if k[3] == n_nights]:      # one grid per length (today's and a fixed period)
+                del _SEASON_GRIDS[old]
+            _SEASON_GRIDS[key] = grid
+    return grid
+
+
+@st.cache_resource(show_spinner=False)
+def warm_season_grid(day) -> bool:
+    """Build today's season grid in a background thread at start-up so the first visitor does not wait."""
+    import threading as _threading
+
+    def work():
+        try:
+            cfg = live_config.__wrapped__() if hasattr(live_config, '__wrapped__') else live_config()
+            season_grid_for(cfg['site'], cfg['constraints'], coming_night_date(site_key(cfg['site'])))
+        except Exception:
+            pass
+
+    _threading.Thread(target=work, name='season-grid-warmup', daemon=True).start()
+    return True
+
+
+def season_rows(site, cons, targets, min_alt: float | None = None) -> list:
+    """One row per (name, ra, dec): tonight's hours above the altitude limit and the observable season (altitude only)."""
+    start = coming_night_date(site_key(site))
+    grid = season_grid_for(site, cons, start)
+    limit = cons.min_alt if min_alt is None else min_alt
+    rows = []
+    for name, ra, dec in targets:
+        s = vis.observing_season(grid, ra, dec, limit)
+        if s['nights_per_year'] == 0:
+            season, until, nxt = 'never above the limit', '', ''
+        elif s.get('always'):
+            season, until, nxt = 'all year', '', ''
+        else:
+            season = f'{s["start"]:%Y-%m-%d}'; until = f'{s["end"]:%Y-%m-%d}'; nxt = f'{s["next_start"]:%Y-%m-%d}' if s['next_start'] else ''
+        rows.append({'target': name, 'tonight_hours': round(s['hours_tonight'], 1), 'observable_from': season, 'until': until,
+                     'next_season_from': nxt, 'nights_per_year': s['nights_per_year'], 'longest_night_hours': round(s['max_hours'], 1)})
+    return rows
+
+
+# ------------------------------------------------------------------ live text input (custom component)
+_LIVE_INPUT = None
+
+
+def live_text_input(label: str, key: str, placeholder: str = '', help: str = '', password: bool = False) -> str:
+    """A text field that reports its value while typing (after a short pause, on paste, Enter or blur): no Enter needed."""
+    global _LIVE_INPUT
+    import streamlit.components.v1 as components
+    if _LIVE_INPUT is None:
+        _LIVE_INPUT = components.declare_component('live_input', path=str(Path(__file__).resolve().parent / 'sevendt_calc' / 'components' / 'live_input'))
+    current = st.session_state.get(f'{key}_value', '')
+    value = _LIVE_INPUT(label=label, value=current, placeholder=placeholder, help=help, password=password, key=key, default=current)
+    value = '' if value is None else str(value)
+    st.session_state[f'{key}_value'] = value
+    return value
