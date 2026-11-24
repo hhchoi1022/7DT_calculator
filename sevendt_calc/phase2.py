@@ -1117,6 +1117,33 @@ def save_schedule(folder: Path | str, settings: dict) -> Path:
     return path
 
 
+EXPORT_COLUMNS = ('objname', 'RA', 'De', 'cadence', 'target_count', 'starttime', 'endtime', 'sky_brightness', 'exptime', 'count', 'filter_', 'binning', 'gain',
+                  'dither_arcsec', 'colormode', 'specmode', 'obsmode', 'priority', 'weight', 'objtype', 'program_id', 'program_PI', 'note')
+
+
+def export_rows(requests: list, plans: dict, binning=1, gain=2750, priority=50, weight=1, objtype='Open') -> list:
+    """
+    The observation list of the plan, one row per scheduled part in EXPORT_COLUMNS order (strings): what is
+    written to the Google Sheet. Fixed values: filter_ None, binning, gain, colormode None for Spec requests
+    (specmode None for Color ones), priority, weight, objtype; program_PI is the lead PI without spaces.
+    """
+    rows = []
+    for req in requests:
+        for j, t in enumerate(req.targets):
+            for p in plans_of(plans, req, j):
+                s = p.settings
+                if not s.enabled:
+                    continue
+                rows.append({'objname': t.label, 'RA': f'{t.ra:.6f}' if t.ra is not None else '', 'De': f'{t.dec:.6f}' if t.dec is not None else '',
+                             'cadence': str(int(s.cadence)), 'target_count': str(int(s.epochs)), 'starttime': s.start_text, 'endtime': s.end_text,
+                             'sky_brightness': req.sky_background, 'exptime': f'{t.exptime:g}' if t.exptime is not None else '', 'count': str(int(s.count)),
+                             'filter_': 'None', 'binning': str(binning), 'gain': str(gain), 'dither_arcsec': f'{req.dither_arcsec:g}',
+                             'colormode': t.submode if t.mode == 'Color' else 'None', 'specmode': t.submode if t.mode == 'Spec' else 'None', 'obsmode': t.mode or 'Spec',
+                             'priority': str(priority), 'weight': str(weight), 'objtype': objtype, 'program_id': req.project_id or req.key,
+                             'program_PI': re.sub(r'\s+', '', req.lead_pi), 'note': s.note or 'None'})
+    return rows
+
+
 def schedule_rows(requests: list, plans: dict) -> list:
     """One row per part of every target set with the operator's entries: what goes into the request system."""
     rows = []

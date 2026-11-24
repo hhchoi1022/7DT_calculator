@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from sevendt_calc import phase2, trigger
+from sevendt_calc import phase2, sheets, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, season_grid_for, site_key
 
@@ -576,6 +576,36 @@ def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.Se
     st.plotly_chart(night_figure(plans, grid, i), width='stretch', key='sch_night_fig', config={'displaylogo': False})
 
 
+def observation_list_section(requests: list, plans: dict, folder: Path) -> None:
+    """The plan as an observation list (one row per scheduled part, fixed columns) written to a Google Sheet or downloaded."""
+    st.subheader('Export the observation list')
+    ts = trigger.TriggerSettings.load()
+    hidden = ts.hidden or {}
+    rows = phase2.export_rows(requests, plans, binning=ts.default_binning, gain=ts.default_gain, priority=ts.priority, weight=hidden.get('weight', 1), objtype=hidden.get('objtype', 'Open'))
+    df = pd.DataFrame(rows, columns=list(phase2.EXPORT_COLUMNS))
+    st.caption(f'{len(df)} scheduled rows: objname, RA, De (degrees), cadence, target_count (= target_epoch), starttime / endtime (= obs_starttime / obs_endtime), sky_brightness, exptime, count, '
+               f'filter_ None, binning {ts.default_binning}, gain {ts.default_gain}, dither_arcsec, colormode / specmode, obsmode, priority {ts.priority}, weight {hidden.get("weight", 1)}, '
+               f'objtype {hidden.get("objtype", "Open")}, program_id, program_PI (no spaces), note (yours). Rows with "scheduled" off are left out.')
+    st.dataframe(df, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 330))
+    c1, c2, c3 = st.columns([2, 1.2, 1.2])
+    default_ws = f'schedule_{folder.name}'
+    worksheet = c1.text_input('Worksheet', value=default_ws, key='sch_sheet_ws', help=f'Worksheet of the request spreadsheet ({ts.spreadsheet_url}); it is replaced by this list.')
+    c2.download_button('Download observation list (CSV)', data=df.to_csv(index=False).encode(), file_name=f'{worksheet or default_ws}.csv', mime='text/csv', key='sch_export_csv')
+    key_path = sheets.service_account_key_path()
+    if key_path is None:
+        c3.button('Write to Google Sheet', key='sch_sheet_write', disabled=True)
+        st.warning('No Google service-account key on this server: set google_service_account_key in data/settings.json (or GOOGLE_APPLICATION_CREDENTIALS) and share the spreadsheet with that account; the CSV works meanwhile.')
+        return
+    if c3.button('Write to Google Sheet', type='primary', key='sch_sheet_write', help='Replaces the worksheet with these rows'):
+        try:
+            result = sheets.replace_rows(ts.spreadsheet_url, worksheet.strip() or default_ws, list(phase2.EXPORT_COLUMNS), rows, key_path)
+        except Exception as exc:                          # gspread / network errors: show them, do not crash the page
+            st.error(f'Writing failed: {exc}')
+        else:
+            st.success(f'{result["n_rows"]} rows written to worksheet {result["worksheet"]}' + (' (created)' if result['created'] else '') + f': {result["url"]}')
+    st.caption(f'Service account: {sheets.service_account_email(key_path)} (needs editor access to the spreadsheet).')
+
+
 def export_section(requests: list, plans: dict, folder: Path) -> None:
     ss = st.session_state
     st.subheader('Save and export')
@@ -648,6 +678,7 @@ def main():
     visibility_section(requests, tables, plans, grid, req)
     all_projects_section(requests, tables, plans, grid)
     export_section(requests, plans, folder)
+    observation_list_section(requests, plans, folder)
 
 
 main()

@@ -217,6 +217,21 @@ def test_nights_and_plan():
     assert rows[0]['requester_note'] == 'first line continued line' and rows[0]['note'] == ''
     noted = phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2, note='after the eclipse')
     assert phase2.TargetSettings.from_dict(noted.as_dict()).note == 'after the eclipse'
+    req.project_id, req.project = '26099', {'pi': 'Kim Mi-Ryang', 'sky_background': 'Dark & Gray', 'dither_arcsec': 60}
+    out = phase2.export_rows([req], d)
+    assert len(out) == 2 and list(out[0]) == list(phase2.EXPORT_COLUMNS)
+    assert out[0]['objname'] == 'NGC 253' and out[0]['RA'] == f'{req.targets[0].ra:.6f}' and out[0]['target_count'] == '2' and out[0]['count'] == '3' and out[0]['cadence'] == '0'
+    assert out[0]['starttime'] == '2026-12-01' and out[0]['endtime'] == '2026-12-05' and out[1]['starttime'] == '2026-12-20'
+    assert out[0]['specmode'] == 'specall' and out[0]['colormode'] == 'None' and out[0]['obsmode'] == 'Spec' and out[0]['filter_'] == 'None'
+    assert (out[0]['binning'], out[0]['gain'], out[0]['priority'], out[0]['weight'], out[0]['objtype']) == ('1', '2750', '50', '1', 'Open')
+    assert out[0]['sky_brightness'] == 'Dark & Gray' and out[0]['dither_arcsec'] == '60' and out[0]['program_id'] == '26099' and out[0]['program_PI'] == 'KimMi-Ryang' and out[0]['note'] == 'None'
+    color = {k: v for k, v in d.items()}
+    cp = phase2.make_target_plan(req, 1, table, phase2.TargetSettings(start=date(2027, 3, 4), end=date(2027, 3, 4), count=3, epochs=1), use_moon=False)
+    color[cp.key] = cp
+    crow = [r for r in phase2.export_rows([req], color) if r['objname'] == 'T01022'][0]
+    assert crow['obsmode'] == 'Color' and crow['colormode'] == 'gr' and crow['specmode'] == 'None'
+    d['x'] = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=1, enabled=False), use_moon=False, part=3)
+    assert len(phase2.export_rows([req], d)) == 2                                               # rows with scheduled off are left out
 
 
 def test_schedule_file_roundtrip(tmp_path):
@@ -246,5 +261,5 @@ def test_schedule_page_runs():
     at = AppTest.from_file(str(Path(__file__).resolve().parent.parent / 'schedule_app.py'), default_timeout=300).run()
     assert not at.exception
     assert at.title[0].value == '7DT Scheduling' and at.selectbox[0].value
-    assert [h.value for h in at.subheader] == ['Targets and plan', 'Project summary', 'Visibility of the targets', 'All projects', 'Save and export']
+    assert [h.value for h in at.subheader] == ['Targets and plan', 'Project summary', 'Visibility of the targets', 'All projects', 'Save and export', 'Export the observation list']
     assert at.multiselect[0].label == 'Projects' and at.multiselect[1].label == 'Targets' and at.multiselect[1].value
