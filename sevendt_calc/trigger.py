@@ -387,9 +387,10 @@ def sample_file(kind: str = 'Target') -> bytes:
 PROJECTS_JSON = DATA_DIR / 'projects.json'              # server-local, git-ignored: {"PROJECT_ID": {"key": "...", "allocated_hours": 30}}
 
 
-def load_projects(path: Path | str = PROJECTS_JSON) -> dict | None:
-    """The registered projects, or None when the file is absent (then any project is accepted without a key)."""
-    path = Path(path)
+def load_projects(path: Path | str | None = None) -> dict | None:
+    """The registered projects (PROJECTS_JSON by default), or None when the file is absent: the Observation
+    request page then accepts any project without a key, the Schedule viewer shows nothing."""
+    path = Path(path or PROJECTS_JSON)
     if not path.is_file():
         return None
     raw = json.loads(path.read_text())

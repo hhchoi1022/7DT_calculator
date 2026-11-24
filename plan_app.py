@@ -8,6 +8,7 @@ Run with:  streamlit run plan_app.py
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import streamlit as st
 
 from schedule_plots import (CAT_INDEX, MIN_ALT, dot_trace, heatmap, load_requests_cached, night_dates, night_figure, night_tables, program_data, projects_figure,
                             projects_signature, projects_table, saved_plans, schedule_signature, visibility_figure, warm_program_data)
-from sevendt_calc import phase2, trigger
+from sevendt_calc import keyguard, phase2, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, live_text_input, site_key
 
@@ -154,6 +155,37 @@ def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) 
     st.plotly_chart(night_figure(plans, grid, (night - phase2.PROGRAM_START).days), width='stretch', key='pl_night_fig', config={'displaylogo': False})
 
 
+# ------------------------------------------------------------------ key guessing
+def client_ip() -> str:
+    """The visitor's address: the first X-Forwarded-For entry behind nginx, else the socket's."""
+    try:
+        forwarded = str(st.context.headers.get('X-Forwarded-For', '') or '').split(',')[0].strip()
+        return forwarded or str(st.context.ip_address or '?')
+    except Exception:                                # no request context (tests, bare mode)
+        return '?'
+
+
+def key_scopes(pid: str) -> list[str]:
+    """What a wrong key counts against: the visitor's address, and the Project ID when one is given."""
+    scopes = [f'ip:{client_ip()}']
+    pid_norm = trigger.safe_project_id(pid)
+    if pid_norm:
+        scopes.append(f'pid:{pid_norm}')
+    return scopes
+
+
+def count_wrong_key(scopes: list[str], pid: str, key: str) -> None:
+    """Record a wrong key once per distinct (ID, key) of this session: the field reports while typing, so a
+    PI who types slowly must not use up the free attempts with the prefixes of their own key."""
+    if len(key) < 4:
+        return
+    tried = st.session_state.setdefault('pl_tried', set())
+    if (pid, key) in tried:
+        return
+    tried.add((pid, key))
+    keyguard.GUARD.failed(*scopes)
+
+
 # ------------------------------------------------------------------ main
 def main():
     feedback_note()
@@ -176,13 +208,23 @@ def main():
         st.info('Enter your Project ID and key to see how your targets are planned.')
         return
     projects = trigger.load_projects()
+    if projects is None:                            # never fall open on the public server: no list, no schedule
+        st.error('The project list (data/projects.json) is not configured on this server, so no schedule can be shown.')
+        return
     admin = phase2.admin_key()
+    scopes = key_scopes(pid)
+    wait = keyguard.GUARD.wait(*scopes)
+    if wait > 0:
+        st.error(f'Too many wrong keys: try again in {math.ceil(wait)} s.')
+        return
     is_admin = bool(admin) and pkey.strip() == admin
     if not is_admin:
         ok, msg, _, _ = trigger.check_project_entry(pid, pkey.strip(), projects)
         if not ok:
+            count_wrong_key(scopes, pid, pkey.strip())
             st.error(msg)
             return
+    keyguard.GUARD.succeeded(*scopes)
     projects_sig = projects_signature()
     with st.spinner('Loading the schedule...'):
         data = program_data(key, sun_alt)
