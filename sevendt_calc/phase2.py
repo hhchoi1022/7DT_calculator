@@ -890,7 +890,7 @@ def place_epochs(plans: dict, n_nights: int) -> np.ndarray:
         idx = np.flatnonzero(p.feasible)
         if idx.size == 0:
             continue
-        if p.settings.cadence > 0:
+        if p.settings.cadence > 0 and p.settings.epochs > 1:
             chosen = _place_with_cadence(idx, p.settings.epochs, p.settings.cadence, load)
             if len(chosen) < p.settings.epochs:
                 p.issues.append(f'only {len(chosen)} of {p.settings.epochs} epochs fit with a cadence of {p.settings.cadence} d')
@@ -905,9 +905,9 @@ def place_epochs(plans: dict, n_nights: int) -> np.ndarray:
 def _place_with_cadence(idx: np.ndarray, epochs: int, cadence: int, load: np.ndarray) -> list:
     """
     Epoch nights among the feasible nights `idx` (night indices) about `cadence` days apart: the first
-    epoch on one of the first feasible nights (the start that fits the most epochs, then the least load),
-    each next one on the feasible night nearest to previous + cadence, never closer than the cadence,
-    within a tolerance of a third of the cadence; otherwise the next feasible night after that.
+    epoch on the feasible night from which the most epochs fit (then the least total load, then the
+    earliest), each next one on the feasible night nearest to previous + cadence, never closer than the
+    cadence, within a tolerance of a third of the cadence; otherwise the next feasible night after that.
     """
     feasible = set(int(i) for i in idx)
     tol = max(1, cadence // 3)
@@ -928,7 +928,10 @@ def _place_with_cadence(idx: np.ndarray, epochs: int, cadence: int, load: np.nda
         return out
 
     best = None
-    for start in [int(i) for i in idx[:min(len(idx), max(cadence, 1))]]:
+    starts = [int(i) for i in idx]
+    if len(starts) > 80:                                                           # enough candidates, evenly over the range
+        starts = [starts[k] for k in np.round(np.linspace(0, len(starts) - 1, 80)).astype(int)]
+    for start in starts:
         c = chain(start)
         score = (-len(c), round(sum(load[i] for i in c), 3), c[0])
         if best is None or score < best[0]:

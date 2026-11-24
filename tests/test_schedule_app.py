@@ -224,5 +224,5 @@ def test_schedule_page_runs():
     at = AppTest.from_file(str(Path(__file__).resolve().parent.parent / 'schedule_app.py'), default_timeout=300).run()
     assert not at.exception
     assert at.title[0].value == '7DT Scheduling' and at.selectbox[0].value
-    assert [h.value for h in at.subheader] == ['Targets and plan', 'Projects', 'Visibility of the targets', 'All projects', 'Save and export']
+    assert [h.value for h in at.subheader] == ['Targets and plan', 'Project summary', 'Visibility of the targets', 'All projects', 'Save and export']
     assert at.multiselect[0].label == 'Projects' and at.multiselect[1].label == 'Targets' and at.multiselect[1].value
