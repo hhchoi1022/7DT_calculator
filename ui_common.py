@@ -568,21 +568,22 @@ _SEASON_GRIDS: dict = {}
 _SEASON_LOCK = threading.Lock() if 'threading' in dir() else None
 
 
-def season_grid_for(site, cons, start_night) -> 'vis.SeasonGrid':
-    """The year-long twilight grid for the site from `start_night`, computed once per server and day (about 7 s)."""
+def season_grid_for(site, cons, start_night, n_nights: int = 366) -> 'vis.SeasonGrid':
+    """The twilight grid of `n_nights` nights for the site from `start_night`, computed once per server and day (about 7 s)."""
     import threading as _threading
     global _SEASON_LOCK
     if _SEASON_LOCK is None:
         _SEASON_LOCK = _threading.Lock()
-    key = (site_key(site), cons.sun_alt, start_night)
+    key = (site_key(site), cons.sun_alt, start_night, n_nights)
     grid = _SEASON_GRIDS.get(key)
     if grid is not None:
         return grid
     with _SEASON_LOCK:
         grid = _SEASON_GRIDS.get(key)
         if grid is None:
-            grid = vis.season_grid(start_night, site, cons)
-            _SEASON_GRIDS.clear()
+            grid = vis.season_grid(start_night, site, cons, n_nights)
+            for old in [k for k in _SEASON_GRIDS if k[3] == n_nights]:      # one grid per length (today's and a fixed period)
+                del _SEASON_GRIDS[old]
             _SEASON_GRIDS[key] = grid
     return grid
 

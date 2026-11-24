@@ -1,0 +1,747 @@
+"""
+Phase-2 observation request files of the 7DS open-time programme, and the operator's schedule built on them.
+
+A request file (one per proposal, plain text) holds a [PROPOSAL] block (PROPOSAL_TITLE, PI_NAME, PI_EMAIL)
+and one [TARGET] ... [END TARGET] block with one set of KEY: value lines per target, sets separated by a
+blank line. Keys: TARGET_TYPE (Target / Survey), OBJ_NAME, RA, DEC, TILE_ID, OBS_MODE, OBS_SUBMODE,
+EXPTIME_PER_FRAME [s], NUM_FRAMES (per filter over the whole programme), OBS_WINDOW (repeatable;
+'YYYY-MM-DD to YYYY-MM-DD' or 'YYYY-MM-DD hh:mm to YYYY-MM-DD hh:mm' in UTC), NOTE (may continue on
+indented lines). Lines starting with '#' are comments. Values may carry units ('100 s', '83.8 deg').
+
+Files are matched to the registered projects (data/projects.json) by the PI name, or by an optional
+mapping.json in the request folder ({"<file name>": "<Project ID>"}).
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+from astropy.time import Time
+
+from . import overhead as oh
+from . import visibility as vis
+from .config import PROJECT_DIR, settings
+from .targets import parse_coordinates
+from .tiles import normalise_tile_id, tile_centre
+from .trigger import request_obsmode
+
+PROGRAM_START = date(2026, 12, 1)
+PROGRAM_END = date(2027, 8, 31)
+PROGRAM_NIGHTS = (PROGRAM_END - PROGRAM_START).days + 1
+MOON_CLASSES = (('Dark', 0.0, 0.2), ('Gray', 0.2, 0.8), ('Bright', 0.8, 1.0))     # illuminated fraction (template definition)
+GOOD_HOURS = 3.0                                                                   # 'dark' band of the observable-hours plot
+KEY_RE = re.compile(r'^([A-Za-z_]+)\s*:\s*(.*)$')
+WINDOW_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})(?:[ T](\d{1,2}:\d{2}))?\s*(?:to|-|~|until)\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{1,2}:\d{2}))?\s*(?:UTC?)?$', re.I)
+NUMBER_RE = re.compile(r'[-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?')
+SCHEDULE_FILE = 'schedule.json'
+MAPPING_FILE = 'mapping.json'
+
+
+def requests_dir() -> Path:
+    """SEVENDT_PHASE2_DIR if set, else settings()['phase2_requests_dir'] (relative to the repository), else Opentime/2612."""
+    env = os.environ.get('SEVENDT_PHASE2_DIR', '').strip()
+    text = env or str(settings().get('phase2_requests_dir') or 'Opentime/2612')
+    path = Path(text).expanduser()
+    return path if path.is_absolute() else PROJECT_DIR / path
+
+
+# ------------------------------------------------------------------ data
+@dataclass
+class Window:
+    """One requested observing window (UTC). Date-only windows cover whole nights, start and end dates inclusive."""
+    start: datetime
+    end: datetime
+    timed: bool
+    text: str
+
+    @property
+    def hours(self) -> float:
+        return (self.end - self.start).total_seconds() / 3600.0
+
+    @property
+    def first_date(self) -> date:
+        return self.start.date()
+
+    @property
+    def last_date(self) -> date:
+        """Last night date of the window (date windows end at midnight after their last day)."""
+        return (self.end - timedelta(days=1)).date() if not self.timed else self.end.date()
+
+    def night_mask(self, grid: vis.SeasonGrid) -> np.ndarray:
+        """Nights of the grid touched by the window (date windows: by the local night date; timed: by overlap)."""
+        if not self.timed:
+            lo, hi = self.first_date, self.last_date
+            return np.array([lo <= d <= hi for d in grid.dates], bool)
+        s, e = Time(self.start).jd, Time(self.end).jd
+        return (grid.end_jd > s) & (grid.start_jd < e)
+
+    def night_intervals(self, grid: vis.SeasonGrid) -> tuple[np.ndarray, np.ndarray]:
+        """For a timed window: its start and end in hours after evening twilight of every night (NaN: not that night)."""
+        s, e = Time(self.start).jd, Time(self.end).jd
+        length = (grid.end_jd - grid.start_jd) * 24.0
+        lo = np.clip((s - grid.start_jd) * 24.0, 0.0, length)
+        hi = np.clip((e - grid.start_jd) * 24.0, 0.0, length)
+        ok = (hi - lo) > 1e-9
+        return np.where(ok, lo, np.nan), np.where(ok, hi, np.nan)
+
+
+@dataclass
+class RequestTarget:
+    index: int
+    target_type: str = ''
+    name: str = ''
+    ra: float | None = None
+    dec: float | None = None
+    tile_id: str = ''
+    mode: str = ''
+    submode: str = ''
+    exptime: float | None = None
+    nframes: int | None = None
+    windows: list = field(default_factory=list)
+    note: str = ''
+    issues: list = field(default_factory=list)
+    n_orders: int = 1
+    exposure_s: float = 0.0
+    total_s: float = 0.0
+    display: str = ''              # label made unique within the file (set by parse_request)
+
+    @property
+    def label(self) -> str:
+        return self.name or self.tile_id or f'target {self.index}'
+
+    @property
+    def timed(self) -> bool:
+        return any(w.timed for w in self.windows)
+
+    @property
+    def window_text(self) -> str:
+        return '; '.join(w.text for w in self.windows)
+
+    @property
+    def mode_text(self) -> str:
+        return f'{self.mode}/{self.submode}' if self.submode else self.mode
+
+    @property
+    def has_coordinates(self) -> bool:
+        return self.ra is not None and self.dec is not None
+
+    @property
+    def window_start(self) -> date | None:
+        return min((w.first_date for w in self.windows), default=None)
+
+    @property
+    def window_end(self) -> date | None:
+        return max((w.last_date for w in self.windows), default=None)
+
+
+@dataclass
+class RequestFile:
+    path: str
+    title: str = ''
+    pi: str = ''
+    emails: str = ''
+    targets: list = field(default_factory=list)
+    issues: list = field(default_factory=list)
+    project_id: str = ''
+    project: dict = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return Path(self.path).name
+
+    @property
+    def key(self) -> str:
+        """Identifier used in the schedule: the Project ID, or the file name when the file could not be matched."""
+        return self.project_id or Path(self.path).stem
+
+    @property
+    def lead_pi(self) -> str:
+        return re.split(r',|;|\band\b|&', self.pi)[0].strip()
+
+    @property
+    def observation(self) -> str:
+        if self.project.get('observation'):
+            return str(self.project['observation'])
+        types = {t.target_type for t in self.targets}
+        return 'Survey' if types == {'Survey'} else 'Target'
+
+    @property
+    def mode(self) -> str:
+        return str(self.project.get('mode') or ', '.join(sorted({t.mode for t in self.targets if t.mode})))
+
+    @property
+    def submodes(self) -> str:
+        return ', '.join(sorted({t.submode for t in self.targets if t.submode}))
+
+    @property
+    def sky_background(self) -> str:
+        return str(self.project.get('sky_background') or 'Any')
+
+    @property
+    def allocated_hours(self) -> float | None:
+        hours = self.project.get('allocated_hours')
+        return float(hours) if hours is not None else None
+
+    @property
+    def exposure_h(self) -> float:
+        return sum(t.exposure_s for t in self.targets) / 3600.0
+
+    @property
+    def total_h(self) -> float:
+        return sum(t.total_s for t in self.targets) / 3600.0
+
+    @property
+    def requested_start(self) -> date:
+        starts = [t.window_start for t in self.targets if t.window_start]
+        return max(min(starts), PROGRAM_START) if starts else PROGRAM_START
+
+    @property
+    def requested_end(self) -> date:
+        ends = [t.window_end for t in self.targets if t.window_end]
+        return min(max(ends), PROGRAM_END) if ends else PROGRAM_END
+
+    @property
+    def timed(self) -> bool:
+        return any(t.timed for t in self.targets)
+
+    @property
+    def all_issues(self) -> list:
+        return list(self.issues) + [f'{t.label}: {i}' for t in self.targets for i in t.issues]
+
+
+# ------------------------------------------------------------------ parsing
+def _number(text: str, kind: str = 'float'):
+    m = NUMBER_RE.search(str(text))
+    if not m:
+        return None
+    value = float(m.group(0))
+    return int(round(value)) if kind == 'int' else value
+
+
+def parse_window(text: str) -> Window:
+    m = WINDOW_RE.match(text.strip())
+    if not m:
+        raise ValueError(f"OBS_WINDOW '{text}' is not 'YYYY-MM-DD to YYYY-MM-DD' (optionally with hh:mm UTC)")
+    d0, t0, d1, t1 = m.groups()
+    timed = bool(t0 or t1)
+    start = datetime.strptime(f'{d0} {t0 or "00:00"}', '%Y-%m-%d %H:%M')
+    end = datetime.strptime(f'{d1} {t1 or "00:00"}', '%Y-%m-%d %H:%M')
+    if not timed:
+        end = end + timedelta(days=1)            # whole end day
+    if end <= start:
+        raise ValueError(f"OBS_WINDOW '{text}' ends before it starts")
+    return Window(start=start, end=end, timed=timed, text=text.strip())
+
+
+def _build_target(index: int, values: dict) -> RequestTarget:
+    def first(key):
+        items = values.get(key) or []
+        return items[0].strip() if items else ''
+
+    t = RequestTarget(index=index)
+    kind = first('TARGET_TYPE').strip().title()
+    t.target_type = kind if kind in ('Target', 'Survey') else (kind or 'Target')
+    if kind and kind not in ('Target', 'Survey'):
+        t.issues.append(f"TARGET_TYPE '{kind}' is not Target or Survey")
+    t.name = re.sub(r'\s+', ' ', first('OBJ_NAME'))
+    t.tile_id = first('TILE_ID')
+    t.mode = first('OBS_MODE').strip().title()
+    t.submode = first('OBS_SUBMODE').strip()
+    if t.mode == 'Spec':
+        t.submode = t.submode.lower()
+    t.note = ' '.join(v.strip() for v in values.get('NOTE', []) if v.strip())
+    if t.target_type == 'Survey' or (t.tile_id and not first('RA')):
+        tid = normalise_tile_id(t.tile_id) if t.tile_id else None
+        if tid is None:
+            t.issues.append(f"TILE_ID '{t.tile_id}' is not a 7DS tile ID")
+        else:
+            try:
+                t.ra, t.dec = tile_centre(tid)
+                t.tile_id = tid
+            except ValueError as exc:
+                t.issues.append(str(exc))
+        if not t.name:
+            t.name = t.tile_id
+    else:
+        ra, dec = re.sub(r'(?i)deg', '', first('RA')).strip(), re.sub(r'(?i)deg', '', first('DEC')).strip()
+        if ra and dec:
+            try:
+                t.ra, t.dec = parse_coordinates(ra, dec)
+            except ValueError as exc:
+                t.issues.append(str(exc))
+        else:
+            t.issues.append('RA / DEC missing')
+    t.exptime = _number(first('EXPTIME_PER_FRAME'))
+    t.nframes = _number(first('NUM_FRAMES'), 'int')
+    if t.exptime is None:
+        t.issues.append('EXPTIME_PER_FRAME missing')
+    if t.nframes is None:
+        t.issues.append('NUM_FRAMES missing')
+    for text in values.get('OBS_WINDOW', []):
+        if not text.strip():
+            continue
+        try:
+            t.windows.append(parse_window(text))
+        except ValueError as exc:
+            t.issues.append(str(exc))
+    if not t.windows:
+        t.issues.append('no OBS_WINDOW: the whole programme period is assumed')
+    if not t.mode or not t.submode:
+        t.issues.append('OBS_MODE / OBS_SUBMODE missing')
+    return t
+
+
+def parse_request(text: str, path: str = '') -> RequestFile:
+    """Parse one request file (its text). Problems are collected in `issues`, never raised."""
+    req = RequestFile(path=path)
+    proposal, sets, section, current, last_key = {}, [], None, None, None
+
+    def close():
+        nonlocal current
+        if current:
+            sets.append(current)
+        current = None
+
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            if section == 'target':
+                close()
+            continue
+        if s.startswith('#'):
+            continue
+        tag = s.upper()
+        if tag == '[PROPOSAL]':
+            section = 'proposal'
+            continue
+        if tag == '[END PROPOSAL]':
+            section = None
+            continue
+        if tag == '[TARGET]':
+            section, current = 'target', None
+            continue
+        if tag == '[END TARGET]':
+            close()
+            section = None
+            continue
+        m = KEY_RE.match(s)
+        if m and m.group(1).upper() == m.group(1):
+            key, value = m.group(1), m.group(2).strip()
+            if section == 'proposal':
+                proposal[key] = value
+                last_key = key
+            elif section == 'target':
+                if key == 'TARGET_TYPE' and current and 'TARGET_TYPE' in current:
+                    close()
+                if current is None:
+                    current = {}
+                current.setdefault(key, []).append(value)
+                last_key = key
+            else:
+                req.issues.append(f"line outside a block ignored: '{s[:60]}'")
+        elif section == 'target' and current and last_key in current:
+            current[last_key][-1] = (current[last_key][-1] + ' ' + s).strip()      # continuation line
+        elif section == 'proposal' and last_key in proposal:
+            proposal[last_key] = (proposal[last_key] + ' ' + s).strip()
+        else:
+            req.issues.append(f"line not understood: '{s[:60]}'")
+    close()
+    req.title = proposal.get('PROPOSAL_TITLE', '')
+    req.pi = proposal.get('PI_NAME', '')
+    req.emails = proposal.get('PI_EMAIL', '')
+    if not req.title and not req.pi:
+        req.issues.append('no [PROPOSAL] block')
+    req.targets = [_build_target(i, values) for i, values in enumerate(sets, start=1)]
+    counts = {}
+    for t in req.targets:
+        counts[t.label] = counts.get(t.label, 0) + 1
+    for t in req.targets:
+        t.display = f'{t.label} #{t.index}' if counts[t.label] > 1 else t.label
+    if not req.targets:
+        req.issues.append('no targets')
+    return req
+
+
+# ------------------------------------------------------------------ projects and time accounting
+def _name_forms(name: str) -> set:
+    """Spellings of a person's name that identify the same person: 'Kim Mi-Ryang' matches 'Miryang Kim'."""
+    name = re.sub(r'\(.*?\)', ' ', str(name))
+    name = re.split(r',|;|\band\b|&', name)[0]
+    tokens = re.findall(r'[a-z]+', name.lower())
+    if not tokens:
+        return set()
+    forms = {''.join(tokens), ''.join(reversed(tokens))}
+    if len(tokens) > 2:
+        forms |= {tokens[-1] + ''.join(tokens[:-1]), ''.join(tokens[1:]) + tokens[0]}
+    return forms
+
+
+def match_project(req: RequestFile, projects: dict | None) -> str:
+    """The Project ID whose PI wrote the file ('' when none or several match)."""
+    if not projects:
+        return ''
+    forms = _name_forms(req.pi)
+    cands = [pid for pid, p in projects.items() if isinstance(p, dict) and _name_forms(p.get('pi', '')) & forms]
+    if len(cands) > 1:
+        is_too = re.search(r'\bToO\b', req.title + ' ' + ' '.join(t.note for t in req.targets)) is not None
+        narrowed = [pid for pid in cands if (str(projects[pid].get('observation', '')) == 'ToO') == is_too]
+        cands = narrowed or cands
+    if len(cands) > 1:
+        spec = all(t.mode == 'Spec' for t in req.targets)
+        narrowed = [pid for pid in cands if (str(projects[pid].get('mode', '')) == 'Spec') == spec]
+        cands = narrowed or cands
+    return cands[0] if len(cands) == 1 else ''
+
+
+def compute_times(req: RequestFile, cfg: dict | None = None, oh_config: oh.OverheadConfig | None = None) -> None:
+    """Open-shutter and total (with overheads) seconds of every target, from the overhead model of the mode."""
+    oh_config = oh_config or oh.OverheadConfig.load()
+    for t in req.targets:
+        if t.exptime is None or t.nframes is None or t.nframes < 1:
+            t.n_orders, t.exposure_s, t.total_s = 1, 0.0, 0.0
+            continue
+        om = request_obsmode(t.mode, t.submode, cfg) if t.mode and t.submode else None
+        t.n_orders = max(om.n_filters_per_unit, 1) if om is not None else 1
+        t.exposure_s = float(t.exptime) * int(t.nframes) * t.n_orders
+        if om is None:
+            t.total_s = t.exposure_s
+            if t.mode and t.submode:
+                t.issues.append(f'mode {t.mode_text} unknown to the instrument: no overhead estimated')
+            continue
+        try:
+            t.total_s = oh.estimate([oh.ObsRequest(t.label, float(t.exptime), int(t.nframes), om, config=oh_config)], oh_config).total
+        except ValueError as exc:
+            t.total_s = t.exposure_s
+            t.issues.append(f'overhead not estimated: {exc}')
+
+
+def load_mapping(folder: Path | str) -> dict:
+    path = Path(folder) / MAPPING_FILE
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text())
+    except ValueError:
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if not str(k).startswith('_')}
+
+
+def load_requests(folder: Path | str, projects: dict | None = None, cfg: dict | None = None) -> list:
+    """Every *.txt request file of the folder, matched to the projects and with its times computed, sorted by Project ID."""
+    folder = Path(folder)
+    mapping = load_mapping(folder)
+    oh_config = oh.OverheadConfig.load()
+    out = []
+    for path in sorted(folder.glob('*.txt')):
+        req = parse_request(path.read_text(encoding='utf-8', errors='replace'), str(path))
+        pid = mapping.get(path.name) or match_project(req, projects)
+        if pid and projects and pid in projects:
+            req.project_id = pid
+            req.project = {k: v for k, v in projects[pid].items() if k != 'key'}
+        elif projects:
+            req.issues.append('no registered project matches the PI name (add the file to mapping.json)')
+        compute_times(req, cfg, oh_config)
+        out.append(req)
+    out.sort(key=lambda r: (r.project_id == '', r.project_id, r.name))
+    return out
+
+
+def folder_signature(folder: Path | str) -> tuple:
+    """Changes when a request file (or the mapping) is added, removed or edited."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return ()
+    return tuple(sorted((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in list(folder.glob('*.txt')) + [folder / MAPPING_FILE] if p.is_file()))
+
+
+# ------------------------------------------------------------------ nights
+def moon_allowed(sky_background: str, fraction: np.ndarray) -> np.ndarray:
+    """Nights whose Moon illumination suits the proposal's sky background ('Dark', 'Dark & Gray', 'Any', ...)."""
+    text = str(sky_background or 'Any').lower()
+    if 'any' in text or not text.strip():
+        return np.ones_like(fraction, bool)
+    ok = np.zeros_like(fraction, bool)
+    for name, lo, hi in MOON_CLASSES:
+        if name.lower() in text or (name == 'Gray' and 'grey' in text):
+            ok |= (fraction >= lo) & (fraction <= hi)
+    return ok if ok.any() else np.ones_like(fraction, bool)
+
+
+@dataclass
+class NightTable:
+    """Per-night numbers of one request on the season grid: rows nights, columns targets."""
+    dates: list
+    night_hours: np.ndarray        # length of every night [h]
+    max_alt: np.ndarray            # (nights, targets) highest altitude during the night
+    transit: np.ndarray            # (nights, targets) the transit falls inside the night
+    at_hours: np.ndarray           # (nights, targets) hours after twilight of the nightly maximum
+    culmination: np.ndarray        # (targets,)
+    hours: np.ndarray              # (nights, targets) hours above the altitude limit
+    starts: np.ndarray             # (nights, targets, 4) intervals above the limit, hours after twilight
+    ends: np.ndarray
+    requested: np.ndarray          # (nights, targets) inside one of the target's OBS_WINDOWs
+    win_starts: np.ndarray         # (nights, targets, k) timed windows as intervals (NaN when none / untimed)
+    win_ends: np.ndarray
+    moon: np.ndarray               # (nights,) Moon illumination
+    moon_ok: np.ndarray            # (nights,) suits the proposal's sky background
+
+    def target_intervals(self, i: int, j: int) -> list:
+        """Intervals (hours after twilight) of target j during night i in which it is above the limit and
+        inside a requested timed window (all night when the target's windows are date-only)."""
+        up = [(s, e) for s, e in zip(self.starts[i, j], self.ends[i, j]) if not math.isnan(s)]
+        if not self.requested[i, j]:
+            return []
+        wins = [(s, e) for s, e in zip(self.win_starts[i, j], self.win_ends[i, j]) if not math.isnan(s)]
+        if not wins:
+            return up
+        out = []
+        for s, e in up:
+            for ws, we in wins:
+                lo, hi = max(s, ws), min(e, we)
+                if hi - lo > 1e-9:
+                    out.append((lo, hi))
+        return out
+
+    def available(self, i: int, cols=None) -> list:
+        """Union of the targets' intervals during night i (hours after twilight)."""
+        cols = range(self.max_alt.shape[1]) if cols is None else cols
+        return merge_intervals([iv for j in cols for iv in self.target_intervals(i, j)])
+
+
+def merge_intervals(intervals: list) -> list:
+    out = []
+    for lo, hi in sorted(intervals):
+        if out and lo <= out[-1][1] + 1e-9:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def interval_hours(intervals: list) -> float:
+    return float(sum(hi - lo for lo, hi in intervals))
+
+
+def night_table(req: RequestFile, grid: vis.SeasonGrid, moon: np.ndarray, min_alt: float = 30.0) -> NightTable:
+    n, m = len(grid.dates), len(req.targets)
+    ra = np.array([t.ra if t.has_coordinates else np.nan for t in req.targets], float)
+    dec = np.array([t.dec if t.has_coordinates else np.nan for t in req.targets], float)
+    if m:
+        alt = vis.nightly_max_altitude(grid, ra, dec)
+        hours = vis.hours_above(grid, ra, dec, min_alt)
+        starts, ends = vis.intervals_above(grid, ra, dec, min_alt)
+    else:
+        alt = {'max_alt': np.zeros((n, 0)), 'transit': np.zeros((n, 0), bool), 'at_hours': np.zeros((n, 0)), 'culmination': np.zeros(0)}
+        hours, starts, ends = np.zeros((n, 0)), np.full((n, 0, 4), np.nan), np.full((n, 0, 4), np.nan)
+    hours = np.where(np.isnan(hours), 0.0, hours)
+    requested = np.zeros((n, m), bool)
+    k = max([sum(1 for w in t.windows if w.timed) for t in req.targets] + [1])
+    win_s = np.full((n, m, k), np.nan)
+    win_e = np.full((n, m, k), np.nan)
+    for j, t in enumerate(req.targets):
+        if not t.windows:
+            requested[:, j] = True
+            continue
+        kk = 0
+        for w in t.windows:
+            requested[:, j] |= w.night_mask(grid)
+            if w.timed:
+                win_s[:, j, kk], win_e[:, j, kk] = w.night_intervals(grid)
+                kk += 1
+    return NightTable(dates=list(grid.dates), night_hours=(grid.end_jd - grid.start_jd) * 24.0, max_alt=alt['max_alt'], transit=alt['transit'],
+                      at_hours=alt['at_hours'], culmination=alt['culmination'], hours=hours, starts=starts, ends=ends, requested=requested,
+                      win_starts=win_s, win_ends=win_e, moon=moon, moon_ok=moon_allowed(req.sky_background, moon))
+
+
+# ------------------------------------------------------------------ the operator's plan
+@dataclass
+class PlanSettings:
+    start: date
+    end: date
+    hours_per_night: float
+    use_moon: bool = True
+    enabled: bool = True
+    max_nights: int = 0            # 0: every usable night of the window; else that many nights, spread evenly over the window
+
+    def as_dict(self) -> dict:
+        return {'start': self.start.isoformat(), 'end': self.end.isoformat(), 'hours_per_night': round(float(self.hours_per_night), 2),
+                'max_nights': int(self.max_nights), 'use_moon': bool(self.use_moon), 'enabled': bool(self.enabled)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'PlanSettings':
+        return cls(start=date.fromisoformat(str(d['start'])), end=date.fromisoformat(str(d['end'])), hours_per_night=float(d.get('hours_per_night', 1.0)),
+                   use_moon=bool(d.get('use_moon', True)), enabled=bool(d.get('enabled', True)), max_nights=int(d.get('max_nights', 0) or 0))
+
+
+@dataclass
+class Plan:
+    key: str
+    settings: PlanSettings
+    active: np.ndarray            # (nights,) inside the planned window, requested, Moon ok
+    available_h: np.ndarray       # (nights,) hours the project's targets are observable (union)
+    planned_h: np.ndarray         # (nights,) hours planned
+    intervals: list               # per night: the available intervals (hours after twilight)
+    required_h: float
+
+    @property
+    def planned_total(self) -> float:
+        return float(self.planned_h.sum())
+
+    @property
+    def nights(self) -> int:
+        return int((self.planned_h > 0).sum())
+
+    @property
+    def shortfall(self) -> float:
+        return max(0.0, self.required_h - self.planned_total)
+
+    @property
+    def status(self) -> str:
+        if not self.settings.enabled:
+            return 'off'
+        if self.required_h > 0 and self.available_h.sum() <= 0:
+            return 'never observable'
+        if self.required_h <= 0:
+            return 'no time requested'
+        if self.planned_total + 1e-6 >= self.required_h:
+            return 'OK'
+        return f'short by {self.shortfall:.1f} h'
+
+
+def default_settings(req: RequestFile, table: NightTable) -> PlanSettings:
+    """A first plan: the requested window, Moon condition on, hours per night that spread the request over the usable nights."""
+    start, end = req.requested_start, req.requested_end
+    in_window = np.array([start <= d <= end for d in table.dates], bool)
+    active = in_window & table.requested.any(axis=1) & table.moon_ok
+    avail = np.array([interval_hours(table.available(i)) if active[i] else 0.0 for i in range(len(table.dates))])
+    usable = avail[avail > 0]
+    if req.timed:
+        hours = float(usable.max()) if usable.size else 1.0
+    elif usable.size:
+        hours = math.ceil(req.total_h / usable.size * 10.0) / 10.0
+        hours = float(min(max(hours, 0.5), usable.max()))
+    else:
+        hours = 1.0
+    return PlanSettings(start=start, end=end, hours_per_night=round(hours, 1), use_moon=True, enabled=req.observation != 'ToO')
+
+
+def make_plan(req: RequestFile, table: NightTable, settings: PlanSettings) -> Plan:
+    n = len(table.dates)
+    in_window = np.array([settings.start <= d <= settings.end for d in table.dates], bool)
+    active = in_window & table.requested.any(axis=1)
+    if settings.use_moon:
+        active &= table.moon_ok
+    if not settings.enabled:
+        active[:] = False
+    intervals = [table.available(i) if active[i] else [] for i in range(n)]
+    avail = np.array([interval_hours(iv) for iv in intervals])
+    planned = np.where(active, np.minimum(avail, float(settings.hours_per_night)), 0.0)
+    usable = np.flatnonzero(planned > 1e-9)
+    if settings.max_nights > 0 and usable.size > settings.max_nights:
+        keep = usable[np.round(np.linspace(0, usable.size - 1, settings.max_nights)).astype(int)]
+        mask = np.zeros(n, bool)
+        mask[keep] = True
+        planned = np.where(mask, planned, 0.0)
+    return Plan(key=req.key, settings=settings, active=active, available_h=avail, planned_h=planned, intervals=intervals, required_h=req.total_h)
+
+
+def pack_night_slots(jobs: list) -> tuple[dict, dict]:
+    """
+    Share one night between jobs = [(key, demand_h, intervals)]: one job at a time, pre-emptive, the job with
+    the least slack (remaining availability minus remaining demand) first; exact for jobs available in one
+    interval. Returns (key -> hours obtained, key -> [(start, end), ...] slots in hours after twilight).
+    """
+    remaining = {k: float(d) for k, d, _ in jobs}
+    got = {k: 0.0 for k, _, _ in jobs}
+    slots = {k: [] for k, _, _ in jobs}
+    ivs = {k: [(float(lo), float(hi)) for lo, hi in iv] for k, _, iv in jobs}
+    edges = sorted({x for iv in ivs.values() for lo, hi in iv for x in (lo, hi)})
+    for t0, t1 in zip(edges[:-1], edges[1:]):
+        left = t1 - t0
+        while left > 1e-9:
+            ready = [k for k in remaining if remaining[k] > 1e-9 and any(lo - 1e-9 <= t0 and t1 <= hi + 1e-9 for lo, hi in ivs[k])]
+            if not ready:
+                break
+            t = t1 - left
+            k = min(ready, key=lambda k: sum(max(0.0, hi - max(lo, t)) for lo, hi in ivs[k]) - remaining[k])
+            dt = min(left, remaining[k])
+            remaining[k] -= dt
+            got[k] += dt
+            left -= dt
+            if slots[k] and abs(slots[k][-1][1] - t) < 1e-9:
+                slots[k][-1] = (slots[k][-1][0], t + dt)
+            else:
+                slots[k].append((t, t + dt))
+    return got, slots
+
+
+def pack_night(jobs: list) -> dict:
+    """Hours each job obtains when the night is shared (see pack_night_slots)."""
+    return pack_night_slots(jobs)[0]
+
+
+def night_conflicts(plans: dict, dates: list) -> list:
+    """Nights where the projects that share the night cannot all get their planned hours (time-of-night overlap)."""
+    out = []
+    keys = list(plans)
+    for i, d in enumerate(dates):
+        jobs = [(k, float(plans[k].planned_h[i]), plans[k].intervals[i]) for k in keys if plans[k].planned_h[i] > 1e-9]
+        if len(jobs) < 2:
+            continue
+        got = pack_night(jobs)
+        short = {k: demand - got[k] for k, demand, _ in jobs if got[k] < demand - 1.0 / 60.0}       # more than a minute short
+        if short:
+            out.append({'date': d, 'projects': [k for k, _, _ in jobs], 'demand_h': sum(x for _, x, _ in jobs), 'scheduled_h': sum(got.values()),
+                        'short': short})
+    return out
+
+
+# ------------------------------------------------------------------ schedule file
+def load_schedule(folder: Path | str) -> dict:
+    path = Path(folder) / SCHEDULE_FILE
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text())
+    except ValueError:
+        return {}
+    out = {}
+    for k, v in raw.items():
+        if str(k).startswith('_') or not isinstance(v, dict):
+            continue
+        try:
+            out[str(k)] = PlanSettings.from_dict(v)
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
+def save_schedule(folder: Path | str, settings: dict) -> Path:
+    path = Path(folder) / SCHEDULE_FILE
+    data = {'_description': 'Operator schedule of the Phase-2 requests: planned observing window and hours per night of every project (dates are local nights).',
+            '_saved': datetime.now().isoformat(timespec='seconds')}
+    data.update({k: v.as_dict() for k, v in settings.items()})
+    path.write_text(json.dumps(data, indent=2))
+    return path
+
+
+def schedule_rows(requests: list, plans: dict) -> list:
+    """One row per target with the project's planned window: the obsdate_window to be entered in the request system."""
+    rows = []
+    for req in requests:
+        plan = plans.get(req.key)
+        for t in req.targets:
+            rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'type': t.target_type,
+                         'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5), 'mode': t.mode_text,
+                         'exptime': t.exptime, 'nframes': t.nframes, 'total_h': round(t.total_s / 3600.0, 2), 'requested_windows': t.window_text,
+                         'obsdate_window_start': plan.settings.start.isoformat() if plan and plan.settings.enabled else '',
+                         'obsdate_window_end': plan.settings.end.isoformat() if plan and plan.settings.enabled else '',
+                         'hours_per_night': plan.settings.hours_per_night if plan and plan.settings.enabled else None,
+                         'moon_condition': req.sky_background if plan and plan.settings.use_moon else 'Any', 'note': t.note})
+    return rows

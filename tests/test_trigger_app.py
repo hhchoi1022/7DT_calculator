@@ -150,6 +150,6 @@ def test_colormodes_follow_the_folder():
     ts = trigger.TriggerSettings.load()
     cfg = _cfg()
     assert ts.colormodes is None and ts.color_options(cfg['colormodes']) == config.public_submodes('Color', cfg['colormodes'])
-    assert 'gi' not in ts.color_options(cfg['colormodes']) and 'gri' in ts.color_options(cfg['colormodes'])
-    norm, issues = trigger.validate_rows([{'objname': 'A', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'}], ts, {'obsmode': 'Color', 'colormode': 'gi'}, cfg)
-    assert any(i.field == 'colormode' for i in issues)
+    assert set(ts.color_options(cfg['colormodes'])) == set(cfg['colormodes']) and 'gri' in ts.color_options(cfg['colormodes'])
+    norm, issues = trigger.validate_rows([{'objname': 'A', 'RA': '1', 'De': '2', 'exptime': '100', 'count': '3'}], ts, {'obsmode': 'Color', 'colormode': 'zz'}, cfg)
+    assert any(i.field == 'colormode' for i in issues)                                   # a mode without a file in the folder is refused

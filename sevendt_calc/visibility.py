@@ -698,3 +698,63 @@ def observing_season(grid: SeasonGrid, ra_deg: float, dec_deg: float, min_alt: f
         last = first + gap_after[0] - 1 if gap_after.size else len(ok) - 1
         out['start'], out['end'] = grid.dates[first], grid.dates[last]
     return out
+
+
+def _hour_angles(grid: SeasonGrid, ra_deg, dec_deg):
+    """Hour angle (deg) at evening and morning twilight for every night (rows) and target (columns)."""
+    ra = np.atleast_1d(np.asarray(ra_deg, float))
+    dec = np.radians(np.atleast_1d(np.asarray(dec_deg, float)))
+    span = (grid.end_jd - grid.start_jd) * 24.0 * SIDEREAL_DEG_PER_HOUR
+    h_start = (grid.lst_start_deg[:, None] - ra[None, :] + 180.0) % 360.0 - 180.0
+    return dec, h_start, h_start + span[:, None]
+
+
+def nightly_max_altitude(grid: SeasonGrid, ra_deg, dec_deg) -> dict:
+    """
+    The highest altitude each target reaches during each night (no refraction): arrays (nights, targets)
+    'max_alt' [deg], 'transit' (the transit itself falls inside the night, so the night's maximum is the
+    culmination altitude), 'at_hours' (hours after evening twilight of the maximum), plus the culmination
+    altitude of every target, 'culmination' (targets,).
+    """
+    dec, h_start, h_end = _hour_angles(grid, ra_deg, dec_deg)
+    phi = math.radians(grid.latitude)
+    before = h_end < 0.0                                    # the night ends before the transit
+    inside = (h_start <= 0.0) & (h_end >= 0.0)
+    after = h_start > 0.0                                   # the transit was before the night; the next one at 360
+    next_inside = after & (h_end >= 360.0)
+    use_start = after & ~next_inside & (h_start <= 360.0 - h_end)
+    use_end = (after & ~next_inside & ~use_start) | before
+    h_best = np.where(inside | next_inside, 0.0, np.where(use_start, h_start, np.where(use_end, h_end, 0.0)))
+    h_best = np.where(before, h_end, h_best)
+    alt = np.degrees(np.arcsin(np.clip(math.sin(phi) * np.sin(dec)[None, :] + math.cos(phi) * np.cos(dec)[None, :] * np.cos(np.radians(h_best)), -1.0, 1.0)))
+    offset = np.where(inside, -h_start, np.where(next_inside, 360.0 - h_start, np.where(use_start, 0.0, h_end - h_start)))
+    culmination = np.degrees(np.arcsin(np.clip(math.sin(phi) * np.sin(dec) + math.cos(phi) * np.cos(dec), -1.0, 1.0)))
+    return {'max_alt': alt, 'transit': inside | next_inside, 'at_hours': offset / SIDEREAL_DEG_PER_HOUR, 'culmination': culmination}
+
+
+def intervals_above(grid: SeasonGrid, ra_deg, dec_deg, min_alt: float = 30.0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Start and end of the (up to 4) intervals per night during which each target is above `min_alt`, in
+    hours after evening twilight: two arrays (nights, targets, 4), NaN where there is no interval.
+    """
+    dec, h_start, h_end = _hour_angles(grid, ra_deg, dec_deg)
+    phi = math.radians(grid.latitude)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cos_h0 = (math.sin(math.radians(min_alt)) - math.sin(phi) * np.sin(dec)) / (math.cos(phi) * np.cos(dec))
+    h0 = np.degrees(np.arccos(np.clip(cos_h0, -1.0, 1.0)))
+    h0 = np.where(cos_h0 >= 1.0, 0.0, np.where(cos_h0 <= -1.0, 180.0, h0))
+    starts = np.full(h_start.shape + (4,), np.nan)
+    ends = np.full(h_start.shape + (4,), np.nan)
+    for j, k in enumerate((-1, 0, 1, 2)):
+        lo = np.maximum(h_start, -h0[None, :] + 360.0 * k)
+        hi = np.minimum(h_end, h0[None, :] + 360.0 * k)
+        ok = (hi - lo) > 1e-9
+        starts[..., j] = np.where(ok, (lo - h_start) / SIDEREAL_DEG_PER_HOUR, np.nan)
+        ends[..., j] = np.where(ok, (hi - h_start) / SIDEREAL_DEG_PER_HOUR, np.nan)
+    return starts, ends
+
+
+def moon_illumination_nights(grid: SeasonGrid) -> np.ndarray:
+    """Illuminated fraction of the Moon at the middle of every night of the grid."""
+    from astroplan import moon_illumination
+    return np.asarray(moon_illumination(Time(0.5 * (grid.start_jd + grid.end_jd), format='jd')), float)

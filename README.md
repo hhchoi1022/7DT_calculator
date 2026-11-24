@@ -1,7 +1,7 @@
 # 7DT Observation Calculator
 
 Web calculators for people who request observations with 7DT (the 7-Dimensional Telescope: 16 units,
-each with its own filter wheel). Five stand-alone Streamlit pages share one core package
+each with its own filter wheel), plus the operator's scheduling page. Stand-alone Streamlit pages share one core package
 (`sevendt_calc/`) and one UI helper module (`ui_common.py`). Every page reads the live TCSpy
 configuration of the telescope (site, filters installed in each unit, observation modes) at start-up
 and re-reads it every minute, so the pages follow the real instrument state without redeploys.
@@ -19,6 +19,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
 | Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
+| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects, shows per project the PI / request type / mode / sky background / allocation / requested time with overheads, the targets with their nightly visibility over the programme period (max altitude or observable hours, shaded OBS_WINDOW / visibility / Moon windows), lets the operator set the `obsdate_window`, hours per night and night count of every project, and checks on which nights the planned projects compete for the same time of night; the schedule is saved next to the request files |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
 overridden with `PORT=...`; the ports in use are assigned by the operator and are not part of this
@@ -71,14 +72,17 @@ sevendt_calc/            core package, no Streamlit imports
   tiles.py               7DS tile catalogue (data/final_tiles.txt), tile matching, tile-ID lookup, Plotly maps
   modebuild.py           mode builder core: validation, JSON export in TCSpy layout, padding, add/remove helpers
   trigger.py             observation requests: spreadsheet columns, upload parsing + column aliases, validation, row formatting
+  phase2.py              Phase-2 request files: parser, project matching by PI name (or mapping.json), exposure / overhead time per target,
+                         per-night tables on the season grid, the operator's plan (window, hours per night) and the night-packing conflict check
   sheets.py              Google Sheets read / append / replace (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
   components/tile_picker/index.html   browser-side tile map (Plotly.js, plain HTML + JS, no build step): clicks toggle tiles locally,
                          only the selection is sent back (Streamlit component protocol by hand); wrapper ui_common.tile_picker()
   modeplot.py            observation-mode figure (transmission curves + unit x order grid), matplotlib and Plotly
-ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving,
+ui_common.py             shared Streamlit pieces: live_config(), target table with CSV upload and name resolving, season_grid_for(),
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
-data/                    settings.json (configuration folder, sheet key), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
+data/                    settings.json (configuration folder, sheet key, request folder), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
+Opentime/<period>/       Phase-2 request files (*.txt), optional mapping.json (file -> Project ID) and the saved schedule.json; git-ignored (PI e-mails)
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -131,6 +135,21 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   allocated hours: with it, a request needs the key and may not exceed the allocation; without it every ID is
   accepted. Survey requests take 7DS tile IDs as object names and fix the coordinates to the tile centres.
 
+- **Scheduling** (`sevendt_calc/phase2.py`): the request folder is `phase2_requests_dir` of `data/settings.json`
+  (or `SEVENDT_PHASE2_DIR`). File format: `[PROPOSAL]` block, one `[TARGET] ... [END TARGET]` block with one
+  `KEY: value` set per target (blank line between sets; NOTE may continue on indented lines; values may carry
+  units). `NUM_FRAMES` is per filter over the whole programme, so the exposure is `exptime x frames x orders`
+  (specall: 2 orders); the total adds the overhead model's estimate of one visit. Files are matched to
+  `data/projects.json` by the PI name (ToO / mode keywords separate a PI with two projects); `mapping.json`
+  overrides. Nights are the 274 local nights 2026-12-01 to 2027-08-31 on the season grid; per target: nightly
+  maximum altitude (`vis.nightly_max_altitude`), hours and intervals above 30 deg (`vis.hours_above`,
+  `vis.intervals_above`), requested nights (date windows by night date, timed windows by overlap, UTC), Moon
+  illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. A plan per
+  project = window, hours per night, optional night count (spread evenly), Moon condition on/off, enabled;
+  planned hours per night = min(hours, union of the targets' intervals). The conflict check packs each night
+  pre-emptively, least slack first (`phase2.pack_night_slots`), and lists nights where a project gets more
+  than a minute less than planned. The schedule is saved as `schedule.json` in the request folder.
+
 ## Working rules (decisions already made with the telescope operator; keep them)
 
 - Defaults everywhere: exposure time 100 s, 3 frames.
@@ -148,7 +167,10 @@ never copy its contents into the repo (some files hold credentials). Mode files 
 - Mode builder: units across, wheel slots down, click to append (duplicates allowed), click an Order
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
-- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`).
+- Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
+- Scheduling page: projects table with single-row selection (tick the box) plus a selectbox; the selected
+  project's settings widgets are keyed by project so switching projects keeps every project's values; the
+  page reruns once after a settings change so the projects table shows the new plan.
 - New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
 
 ## Gotchas (learned the hard way)
