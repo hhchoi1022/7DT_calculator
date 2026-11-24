@@ -92,8 +92,12 @@ def visibility_block(req: phase2.RequestFile, tables: dict, plans: dict, grid: v
                'Bottom: one bar per target: greens = observable (light > 0 h, dark = at transit / ≥ 3 h), yellow = Moon unsuitable for your sky background; red line = the planned range, thin blue line = your requested OBS_WINDOW.')
 
 
-def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict) -> go.Figure:
-    """Your programme's nights next to one anonymous row: nights on which another programme has an epoch (no names, no hours)."""
+def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: str = 'alt') -> go.Figure:
+    """
+    Your programme's nights next to one anonymous row: nights on which another programme has an epoch (no
+    names, no hours). The greens follow the y axis of the visibility figure: 'alt' = some target reaches the
+    altitude limit (light) / transits during the night (dark); 'hours' = some target observable > 0 h / >= 3 h.
+    """
     table = tables[req.key]
     dates = night_dates(table)
     n = len(dates)
@@ -106,13 +110,23 @@ def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict) -> go.F
         else:
             others |= p.placed
     labels = [f'{req.key} (yours)', 'other programmes']
-    cats = np.array([phase2.strip_categories(table.hours_any), np.zeros(n, int)])
-    hover = [[f'{d:%Y-%m-%d}: {h:.2f} h with one of your targets up' + (', epoch assumed' if o else '') for d, h, o in zip(table.dates, table.hours_any, own)],
+    cat = np.zeros(n, int)
+    if mode == 'alt':
+        up = (table.max_alt >= MIN_ALT)
+        cat[up.any(axis=1)] = CAT_INDEX['obs']
+        cat[(table.transit & up).any(axis=1)] = CAT_INDEX['good']
+        own_text = [f'{d:%Y-%m-%d}: best max altitude {a:.1f}°' + (', a target transits during the night' if t else '') for d, a, t in zip(table.dates, table.max_alt.max(axis=1), (table.transit & up).any(axis=1))]
+        legend = [('max altitude ≥ 30°', phase2.STRIP_CATEGORIES[CAT_INDEX['obs']][2]), ('transit during the night', phase2.STRIP_CATEGORIES[CAT_INDEX['good']][2])]
+    else:
+        cat = phase2.strip_categories(table.hours_any)
+        own_text = [f'{d:%Y-%m-%d}: {h:.2f} h with one of your targets up' for d, h in zip(table.dates, table.hours_any)]
+        legend = [(phase2.STRIP_CATEGORIES[CAT_INDEX[k]][1], phase2.STRIP_CATEGORIES[CAT_INDEX[k]][2]) for k in ('obs', 'good')]
+    cats = np.array([cat, np.zeros(n, int)])
+    hover = [[t + (', epoch assumed' if o else '') for t, o in zip(own_text, own)],
              [f'{d:%Y-%m-%d}: ' + ('another programme has an epoch' if o else 'free of other epochs') for d, o in zip(table.dates, others)]]
     fig = go.Figure(heatmap(dates, labels, cats, hover))
     fig.add_trace(dot_trace(dates, labels, [own, others], 'assumed epoch', [[f'{d:%Y-%m-%d}: your epoch' for d in table.dates], ['another programme' for _ in table.dates]]))
-    for name in ('obs', 'good'):
-        _, label, color = phase2.STRIP_CATEGORIES[CAT_INDEX[name]]
+    for label, color in legend:
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'))
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()), datetime.combine(phase2.PROGRAM_END, datetime.min.time())
     fig.update_layout(height=200, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]), yaxis=dict(type='category', autorange='reversed'),
@@ -242,9 +256,12 @@ def main():
         return
     project_view(req, tables, plans, grid)
     st.subheader('Your nights among the other programmes')
-    st.plotly_chart(occupancy_figure(req, tables, plans), width='stretch', key='pl_occ_fig', config={'displaylogo': False})
-    st.caption('Top row: nights on which at least one of your targets is above the altitude limit (greens) and your assumed epochs (diamonds). '
-               'Bottom row: nights on which another programme has an epoch; which programme and for how long is not shown.')
+    mode = 'alt' if str(st.session_state.get('pl_yaxis', 'Max')).startswith('Max') else 'hours'
+    st.plotly_chart(occupancy_figure(req, tables, plans, mode), width='stretch', key='pl_occ_fig', config={'displaylogo': False})
+    st.caption(('Top row: nights on which at least one of your targets reaches 30° (light green) or transits during the night (dark green), same colours as the visibility bars above; '
+                if mode == 'alt' else
+                'Top row: nights on which at least one of your targets is observable (light green > 0 h, dark green ≥ 3 h), same colours as the visibility bars above; ')
+               + 'diamonds = your assumed epochs. Bottom row: nights on which another programme has an epoch; which programme and for how long is not shown.')
 
 
 main()
