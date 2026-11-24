@@ -101,11 +101,10 @@ def test_compute_times_and_moon():
 
 def test_strip_categories_and_target_rows():
     hours = np.array([0.0, 1.0, 4.0, 0.0, 1.0, 4.0, 2.0])
-    window = np.array([False, False, False, True, True, True, True])
-    cats = phase2.strip_categories(hours, window)
+    cats = phase2.strip_categories(hours)
     names = [phase2.STRIP_CATEGORIES[k][0] for k in cats]
-    assert names == ['none', 'obs', 'good', 'win_none', 'win_obs', 'win_good', 'win_obs']
-    moon = phase2.strip_categories(hours, window, np.array([True] * 6 + [False]))
+    assert names == ['none', 'obs', 'good', 'none', 'obs', 'good', 'obs']
+    moon = phase2.strip_categories(hours, np.array([True] * 6 + [False]))
     assert phase2.STRIP_CATEGORIES[moon[-1]][0] == 'moon' and (moon[:-1] == cats[:-1]).all()
     req = phase2.parse_request(SAMPLE)
     req.project = {'dither_arcsec': 60, 'allocated_hours': 5}

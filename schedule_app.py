@@ -24,7 +24,8 @@ from ui_common import feedback_note, live_config, season_grid_for, site_key
 st.set_page_config(page_title='7DT Scheduling', page_icon='🗓️', layout='wide')
 
 MIN_ALT = 30.0
-PLAN_COLOR = 'rgba(214,39,40,0.9)'
+PLAN_COLOR = 'rgba(123,50,148,0.9)'       # planned obsdate_window outline in the visibility figure
+WINDOW_COLOR = '#d62728'                  # windows: a red line through the middle of a strip
 CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
@@ -99,6 +100,31 @@ def heatmap(dates: list, labels: list, cats: np.ndarray, hover: list) -> go.Heat
                       xgap=0, ygap=2, hovertext=hover, hoverinfo='text')
 
 
+def window_trace(dates: list, labels: list, masks: list, name: str) -> go.Scatter:
+    """One red line through the middle of every strip over the nights of its window (runs separated by gaps)."""
+    xs, ys = [], []
+    half = timedelta(hours=12)
+    for label, mask in zip(labels, masks):
+        for a, b in runs(np.asarray(mask, bool)):
+            xs += [dates[a] - half, dates[b] + half, None]
+            ys += [label, label, None]
+    return go.Scatter(x=xs, y=ys, mode='lines', line=dict(color=WINDOW_COLOR, width=4), name=name, hoverinfo='skip', connectgaps=False)
+
+
+def runs(mask: np.ndarray) -> list:
+    """(first, last) index pairs of the True runs of a boolean array."""
+    out, start = [], None
+    for i, v in enumerate(mask):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            out.append((start, i - 1))
+            start = None
+    if start is not None:
+        out.append((start, len(mask) - 1))
+    return out
+
+
 def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict) -> go.Figure:
     """
     items: [(req, table, j)] chosen targets. Top: nightly maximum altitude or observable hours of every target
@@ -122,18 +148,20 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         fig.add_trace(go.Scatter(x=dates, y=table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination', yaxis='y3',
                                  hovertemplate='Moon %{y:.0%}<extra></extra>'), row=1, col=1)
         fig.data[-1].update(yaxis='y3')
-    labels, cats, hover = [], [], []
+    labels, cats, hover, masks = [], [], [], []
     for req, table, j in items:
         t = req.targets[j]
         label = f'{req.key} {t.display}'
-        c = phase2.strip_categories(table.hours[:, j], table.requested[:, j], table.moon_ok if show_moon else None)
+        c = phase2.strip_categories(table.hours[:, j], table.moon_ok if show_moon else None)
         labels.append(label)
         cats.append(c)
+        masks.append(table.requested[:, j])
         hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested' if w else '') + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
                       for d, h, a, w, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], table.moon, table.moon_ok)])
     if items:
         fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
-        category_legend(['obs', 'good', 'win_obs', 'win_good', 'win_none'] + (['moon'] if show_moon else []), fig, row=2, col=1)
+        fig.add_trace(window_trace(dates, labels, masks, 'requested OBS_WINDOW'), row=2, col=1)
+        category_legend(['obs', 'good'] + (['moon'] if show_moon else []), fig, row=2, col=1)
     shapes = []
     seen = set()
     for req, table, j in items:
@@ -156,17 +184,18 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
 
 def projects_figure(requests: list, tables: dict, plans: dict, conflicts: list, show_moon: bool) -> go.Figure:
     """One strip per project: hours during which any of its targets is above the limit (greens), the planned obsdate_window (blues), conflicts in red."""
-    labels, cats, hover = [], [], []
+    labels, cats, hover, masks = [], [], [], []
     first = tables[requests[0].key]
     dates = night_dates(first)
     for req in requests:
         table, plan = tables[req.key], plans[req.key]
         s = plan.settings
         window = np.array([s.enabled and s.start <= d <= s.end for d in table.dates], bool)
-        c = phase2.strip_categories(table.hours_any, window, table.moon_ok if (show_moon and s.use_moon) else None)
+        c = phase2.strip_categories(table.hours_any, table.moon_ok if (show_moon and s.use_moon) else None)
         label = f'{req.key} {req.lead_pi}'
         labels.append(label)
         cats.append(c)
+        masks.append(window)
         hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h with a target up' + (', in the planned window' if w else '') + (f', {p:.2f} h planned' if p > 0 else '') + f', Moon {m:.0%}'
                       for d, h, w, p, m in zip(table.dates, table.hours_any, window, plan.planned_h, table.moon)])
     conflict_row = np.zeros(len(dates), int)
@@ -179,8 +208,10 @@ def projects_figure(requests: list, tables: dict, plans: dict, conflicts: list, 
     labels.append('conflicts')
     cats.append(conflict_row)
     hover.append(conflict_hover)
+    masks.append(np.zeros(len(dates), bool))
     fig = go.Figure(heatmap(dates, labels, np.array(cats), hover))
-    category_legend(['obs', 'good', 'win_obs', 'win_good', 'win_none'] + (['moon'] if show_moon else []) + ['conflict'], fig)
+    fig.add_trace(window_trace(dates, labels, masks, 'planned obsdate_window'))
+    category_legend(['obs', 'good'] + (['moon'] if show_moon else []) + ['conflict'], fig)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=24 * len(labels) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
                       yaxis=dict(autorange='reversed', tickfont=dict(size=11)), legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
@@ -330,8 +361,8 @@ def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.Seas
         return
     items = [(by_key[k], tables[k], j) for k, j in chosen]
     st.plotly_chart(visibility_figure(items, grid, mode, show_moon, plans), width='stretch', key='sch_vis_fig', config={'displaylogo': False})
-    st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; dotted red: the planned obsdate_window of the chosen projects. '
-               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h), blues = the same inside its requested OBS_WINDOW, grey = requested but never above the limit.')
+    st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; dotted purple: the planned obsdate_window of the chosen projects. '
+               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); the red line through the middle marks its requested OBS_WINDOW.')
 
 
 def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) -> None:
@@ -340,7 +371,7 @@ def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.Se
     show_moon = st.checkbox('Mark nights that fail the Moon condition', value=False, key='sch_all_moon')
     st.plotly_chart(projects_figure(requests, tables, plans, conflicts, show_moon), width='stretch', key='sch_projects_fig', config={'displaylogo': False})
     st.caption('Per project and night: greens = hours during which at least one of its targets is above the limit (light > 0 h, dark ≥ 3 h); '
-               'blues = the same inside the planned obsdate_window; grey = planned window on a night without a target up.')
+               'the red line through the middle marks the planned obsdate_window.')
     if conflicts:
         st.error(f'{len(conflicts)} night(s) on which the planned projects compete for the same time of night (least-slack packing, one project at a time).')
         rows = [{'Night (local)': c['date'].isoformat(), 'Projects': ', '.join(c['projects']), 'Planned (h)': round(c['demand_h'], 2),

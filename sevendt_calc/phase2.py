@@ -573,26 +573,21 @@ def night_table(req: RequestFile, grid: vis.SeasonGrid, moon: np.ndarray, min_al
 
 
 STRIP_CATEGORIES = (('none', 'not observable', '#ffffff'), ('obs', 'observable (> 0 h)', '#c7e9c0'), ('good', f'≥ {GOOD_HOURS:g} h observable', '#41ab5d'),
-                    ('win_obs', 'window set, observable', '#9ecae1'), ('win_good', f'window set, ≥ {GOOD_HOURS:g} h', '#2171b5'),
-                    ('win_none', 'window set, not observable', '#d9d9d9'), ('moon', 'Moon unsuitable', '#fff1a8'), ('conflict', 'conflict', '#d62728'))
+                    ('moon', 'Moon unsuitable', '#fff1a8'), ('conflict', 'conflict', '#d62728'))
 
 
-def strip_categories(hours: np.ndarray, window: np.ndarray, moon_ok: np.ndarray | None = None) -> np.ndarray:
+def strip_categories(hours: np.ndarray, moon_ok: np.ndarray | None = None) -> np.ndarray:
     """
     Category index per night for the strip charts (see STRIP_CATEGORIES): observable hours in shades of green,
-    nights inside the window in shades of blue, grey when the window covers a night the target never rises,
-    yellow when the Moon condition fails (only when `moon_ok` is given).
+    yellow when the Moon condition fails (only when `moon_ok` is given). Windows are drawn separately, as a
+    red line through the middle of the strip, so that they never hide the observability colours.
     """
     hours = np.asarray(hours, float)
-    window = np.asarray(window, bool)
     cat = np.zeros(hours.shape, int)
     cat[hours > 1e-9] = 1
     cat[hours >= GOOD_HOURS] = 2
-    cat[window & (hours > 1e-9)] = 3
-    cat[window & (hours >= GOOD_HOURS)] = 4
-    cat[window & ~(hours > 1e-9)] = 5
     if moon_ok is not None:
-        cat[~np.asarray(moon_ok, bool)] = 6
+        cat[~np.asarray(moon_ok, bool)] = 3
     return cat
 
 
