@@ -658,12 +658,12 @@ def time_text(value: datetime) -> str:
 @dataclass
 class TargetSettings:
     """
-    What the operator enters for one requested target set. obs_startdate / obs_enddate are UTC; a value
+    What the operator enters for one requested target set. obs_starttime / obs_endtime are UTC; a value
     without a time (midnight) means the whole local night of that date (so a date-only range covers the
     nights of both dates), a value with a time cuts exactly there.
     """
-    start: datetime                # obs_startdate
-    end: datetime                  # obs_enddate
+    start: datetime                # obs_starttime
+    end: datetime                  # obs_endtime
     count: int                     # frames per filter in one epoch (visit)
     epochs: int                    # number of epochs (target_epoch)
     enabled: bool = True
@@ -682,12 +682,14 @@ class TargetSettings:
         return self.end.date()
 
     def as_dict(self) -> dict:
-        return {'obs_startdate': time_text(self.start), 'obs_enddate': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs),
+        return {'obs_starttime': time_text(self.start), 'obs_endtime': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs),
                 'cadence': int(self.cadence), 'enabled': bool(self.enabled)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
-        return cls(start=as_datetime(d['obs_startdate']), end=as_datetime(d['obs_enddate']), count=int(d.get('count', 1)),
+        start = d['obs_starttime'] if 'obs_starttime' in d else d['obs_startdate']          # files written before the rename
+        end = d['obs_endtime'] if 'obs_endtime' in d else d['obs_enddate']
+        return cls(start=as_datetime(start), end=as_datetime(end), count=int(d.get('count', 1)),
                    epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)), cadence=int(d.get('cadence', 0) or 0))
 
     def bounds_jd(self, grid: vis.SeasonGrid) -> tuple[float, float]:
@@ -754,7 +756,7 @@ class TargetPlan:
     issues: list                   # blocking: the plan cannot be carried out as entered
     warnings: list = field(default_factory=list)   # informational (frames differ from the request)
     part: int = 1                  # part number within the target set (1 unless the operator split the set)
-    in_range: np.ndarray = None    # (nights,) the night overlaps obs_startdate .. obs_enddate
+    in_range: np.ndarray = None    # (nights,) the night overlaps obs_starttime .. obs_endtime
 
     @property
     def target(self) -> RequestTarget:
@@ -799,7 +801,7 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
                      oh_config: oh.OverheadConfig | None = None, part: int = 1, check_frames: bool = True) -> TargetPlan:
     """
     The plan of one part of a target set (most targets have a single part; see make_target_plans). The
-    operator's obs_startdate .. obs_enddate is the master range: the requested OBS_WINDOW dates play no
+    operator's obs_starttime .. obs_endtime is the master range: the requested OBS_WINDOW dates play no
     role here (timed windows still fix the time of night).
     """
     t = req.targets[j]
@@ -826,7 +828,7 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
     placed = np.zeros(n, bool)
     if settings.enabled:
         if settings.end <= settings.start and not (settings.end == settings.start and (settings.start.hour, settings.start.minute) == (0, 0)):
-            issues.append('obs_enddate before obs_startdate')
+            issues.append('obs_endtime before obs_starttime')
         if settings.count < 1 or settings.epochs < 1:
             issues.append('count and target_epoch must be at least 1')
         if not t.has_coordinates:
@@ -1022,7 +1024,7 @@ def load_schedule(folder: Path | str) -> dict:
 def save_schedule(folder: Path | str, settings: dict) -> Path:
     """settings: target key -> [TargetSettings, ...]; a single part is written as one object, several as a list."""
     path = Path(folder) / SCHEDULE_FILE
-    data = {'_description': 'Operator schedule of the Phase-2 requests: per requested target set (key = project|target) the obs_startdate / obs_enddate '
+    data = {'_description': 'Operator schedule of the Phase-2 requests: per requested target set (key = project|target) the obs_starttime / obs_endtime '
                             '(local nights, inclusive), frames per epoch (count) and number of epochs (target_epoch); a list when the target is split into parts.',
             '_saved': datetime.now().isoformat(timespec='seconds')}
     for k, parts in settings.items():
@@ -1043,7 +1045,7 @@ def schedule_rows(requests: list, plans: dict) -> list:
                 rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'part': p.part if p else 1, 'parts': len(parts),
                              'type': t.target_type, 'tile': t.tile_id, 'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5),
                              'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
-                             'obs_startdate': time_text(s.start) if s and s.enabled else '', 'obs_enddate': time_text(s.end) if s and s.enabled else '',
+                             'obs_starttime': time_text(s.start) if s and s.enabled else '', 'obs_endtime': time_text(s.end) if s and s.enabled else '',
                              'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None, 'cadence': s.cadence if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
                              'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})

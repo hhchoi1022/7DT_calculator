@@ -175,7 +175,7 @@ def test_nights_and_plan():
     conflicts = phase2.night_conflicts(crowded, list(grid.dates))
     assert len(conflicts) == 1 and conflicts[0]['date'] == date(2026, 12, 1) and conflicts[0]['short']       # three long epochs on one night do not fit
     rows = phase2.schedule_rows([req], {plan.key: plan})
-    assert len(rows) == 3 and rows[0]['obs_startdate'] == '2026-12-01' and rows[0]['count'] == 3 and rows[0]['target_epoch'] == 3 and rows[1]['obs_startdate'] == ''
+    assert len(rows) == 3 and rows[0]['obs_starttime'] == '2026-12-01' and rows[0]['count'] == 3 and rows[0]['target_epoch'] == 3 and rows[1]['obs_starttime'] == ''
     # cadence: epochs a fixed number of days apart, a too short range reports the shortfall
     cad = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2027, 1, 5), count=1, epochs=4, cadence=7), use_moon=False)
     phase2.place_epochs({cad.key: cad}, 40)

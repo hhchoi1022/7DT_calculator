@@ -1,6 +1,6 @@
 """
 7DT Scheduling (operator page): every target requested in the Phase-2 files of the open-time programme in
-one editable table (obs_startdate, obs_enddate, frames per epoch, number of epochs; a target set may be split
+one editable table (obs_starttime, obs_endtime, frames per epoch, number of epochs; a target set may be split
 into parts with their own values), the check that each
 target is up long enough inside its range for the entered plan, a load-balanced assumption of which nights
 the automatic scheduler would use, visibility of any chosen targets over the programme period, and the
@@ -31,7 +31,7 @@ REQUEST_COLOR = '#555555'                 # requested OBS_WINDOW: a thin grey li
 CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
-EDIT_COLUMNS = ['obs_startdate', 'obs_enddate', 'count', 'target_epoch', 'cadence', 'scheduled']
+EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'scheduled']
 DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
@@ -182,7 +182,7 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
     if items:
         fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
         fig.add_trace(line_trace(dates, [k + 0.3 for k in range(n)], requested, 'requested OBS_WINDOW', REQUEST_COLOR, 1.5), row=2, col=1)
-        fig.add_trace(line_trace(dates, list(range(n)), ranges, 'planned obs_startdate to obs_enddate', WINDOW_COLOR, 4), row=2, col=1)
+        fig.add_trace(line_trace(dates, list(range(n)), ranges, 'planned obs_starttime to obs_endtime', WINDOW_COLOR, 4), row=2, col=1)
         fig.add_trace(dot_trace(dates, list(range(n)), epochs, 'assumed epoch', epoch_hover), row=2, col=1)
         category_legend(['obs', 'good'] + (['moon'] if show_moon else []), fig, row=2, col=1)
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
@@ -281,7 +281,7 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
                              'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
                              'OBS_WINDOW': t.window_text, 'Note': t.note,
-                             'obs_startdate': phase2.time_text(s.start).replace('T', ' '), 'obs_enddate': phase2.time_text(s.end).replace('T', ' '),
+                             'obs_starttime': phase2.time_text(s.start).replace('T', ' '), 'obs_endtime': phase2.time_text(s.end).replace('T', ' '),
                              'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled)})
     return pd.DataFrame(rows)
 
@@ -309,7 +309,7 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
             cadence = int(r['cadence']) if not pd.isna(r['cadence']) else old.cadence
         except (TypeError, ValueError):
             count, epochs, cadence = old.count, old.epochs, old.cadence
-        out[tkey].append(phase2.TargetSettings(start=_as_datetime(r['obs_startdate'], old.start), end=_as_datetime(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
+        out[tkey].append(phase2.TargetSettings(start=_as_datetime(r['obs_starttime'], old.start), end=_as_datetime(r['obs_endtime'], old.end), count=max(count, 1), epochs=max(epochs, 1),
                                                enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
     return {k: v or previous[k] for k, v in out.items()}
 
@@ -350,7 +350,7 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
         ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
         remount_editor(requests)
-    c3.caption('Edit obs_startdate / obs_enddate (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there), count (frames per filter in one epoch), '
+    c3.caption('Edit obs_starttime / obs_endtime (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there), count (frames per filter in one epoch), '
                'target_epoch and cadence (days between epochs, 0 = free). '
                'The range you enter is the master (the requested OBS_WINDOW is shown for reference only; timed windows still fix the time of night). '
                'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is up for that long.')
@@ -359,9 +359,9 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'key': None, 'RA (°)': st.column_config.NumberColumn(format='%.4f'), 'Dec (°)': st.column_config.NumberColumn(format='%.4f'),
         'Exptime (s)': st.column_config.NumberColumn(format='%g'),
         'dither_arcsec': st.column_config.NumberColumn(format='%.0f'), 'Requested (h)': st.column_config.NumberColumn(format='%.2f'),
-        'obs_startdate': st.column_config.TextColumn('obs_startdate', validate=DATE_PATTERN, required=True, width='medium',
+        'obs_starttime': st.column_config.TextColumn('obs_starttime', validate=DATE_PATTERN, required=True, width='medium',
                                                      help='UTC, typed as YYYY-MM-DD (the whole local night of that date) or YYYY-MM-DD HH:MM (start exactly there, e.g. 2027-03-05 00:30).'),
-        'obs_enddate': st.column_config.TextColumn('obs_enddate', validate=DATE_PATTERN, required=True, width='medium',
+        'obs_endtime': st.column_config.TextColumn('obs_endtime', validate=DATE_PATTERN, required=True, width='medium',
                                                    help='UTC, typed as YYYY-MM-DD (that whole local night, inclusive) or YYYY-MM-DD HH:MM (stop exactly there).'),
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
@@ -372,7 +372,7 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
     first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS
     order = first + [c for c in base.columns if c not in first and c != 'key']
-    st.markdown('**Plan table** — type into the cells with the pencil icon (obs_startdate, obs_enddate, count, target_epoch, cadence, scheduled) and press Enter; '
+    st.markdown('**Plan table** — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, scheduled) and press Enter; '
                 'the other columns repeat the request and cannot be edited. The check table further down is read-only.')
     edited = st.data_editor(base, key=f"sch_editor_{ss.get('sch_editor_version', 0)}", column_config=column_config, disabled=disabled, hide_index=True,
                             width='stretch', height=min(60 + 36 * len(base), 560), column_order=order)
@@ -486,7 +486,7 @@ def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.Seas
     items = [(by_key[k], tables[k], j) for k, j in chosen]
     st.plotly_chart(visibility_figure(items, grid, mode, show_moon, plans), width='stretch', key='sch_vis_fig', config={'displaylogo': False})
     st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h. '
-               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); red centre line = the entered obs_startdate to obs_enddate with the assumed epochs as diamonds; '
+               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); red centre line = the entered obs_starttime to obs_endtime with the assumed epochs as diamonds; '
                'thin grey line = the OBS_WINDOW the PI requested (reference only).')
 
 
