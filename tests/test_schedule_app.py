@@ -99,6 +99,24 @@ def test_compute_times_and_moon():
     assert phase2.moon_allowed('Bright', f).tolist() == [False, False, True]
 
 
+def test_strip_categories_and_target_rows():
+    hours = np.array([0.0, 1.0, 4.0, 0.0, 1.0, 4.0, 2.0])
+    window = np.array([False, False, False, True, True, True, True])
+    cats = phase2.strip_categories(hours, window)
+    names = [phase2.STRIP_CATEGORIES[k][0] for k in cats]
+    assert names == ['none', 'obs', 'good', 'win_none', 'win_obs', 'win_good', 'win_obs']
+    moon = phase2.strip_categories(hours, window, np.array([True] * 6 + [False]))
+    assert phase2.STRIP_CATEGORIES[moon[-1]][0] == 'moon' and (moon[:-1] == cats[:-1]).all()
+    req = phase2.parse_request(SAMPLE)
+    req.project = {'dither_arcsec': 60, 'allocated_hours': 5}
+    phase2.compute_times(req)
+    rows = phase2.target_rows([req])
+    assert len(rows) == 3 and rows[0]['dither_arcsec'] == 60 and rows[0]['Total exposure (s)'] == 1800 and rows[0]['Total exposure (h)'] == 0.5 and rows[0]['Orders'] == 2
+    assert rows[1]['Tile'] == 'T01022' and rows[1]['Total exposure (s)'] == 360 and rows[2]['Issues']
+    req.project = {}
+    assert req.dither_arcsec == 0.0 and phase2.target_rows([req])[0]['dither_arcsec'] == 0.0
+
+
 def test_pack_night():
     assert phase2.pack_night([('A', 1.0, [(0.0, 1.0)]), ('B', 1.0, [(0.0, 1.0)])]) == {'A': 1.0, 'B': 0.0}
     got, slots = phase2.pack_night_slots([('A', 1.0, [(0.0, 1.0)]), ('B', 1.0, [(0.0, 3.0)])])
@@ -116,6 +134,7 @@ def test_nights_and_plan():
     phase2.compute_times(req)
     table = phase2.night_table(req, grid, moon)
     assert table.max_alt.shape == (40, 3) and table.hours.shape == (40, 3) and table.starts.shape == (40, 3, 4)
+    assert table.hours_any.shape == (40,) and (table.hours_any >= table.hours.max(axis=1) - 1e-9).all()
     assert table.requested[:31, 0].all() and not table.requested[31:, 0].any()          # December window of NGC 253
     assert not table.requested[:, 1].any()                                              # the timed window of T01022 is in March
     alt = vis.nightly_max_altitude(grid, [69.0, 11.888], [-25.0, -25.288])               # RA 4.6 h transits near local midnight in early December
@@ -157,3 +176,5 @@ def test_schedule_page_runs():
     assert not at.exception
     assert at.title[0].value == '7DT Scheduling' and at.selectbox[0].value
     assert [m.label for m in at.metric][:3] == ['Allocated', 'Requested exposure', 'Requested with overheads']
+    assert [h.value for h in at.subheader] == ['Requested targets', 'Projects', 'Visibility of the targets', 'All projects', 'Save and export']
+    assert at.multiselect[0].label == 'Projects' and at.multiselect[1].label == 'Targets' and at.multiselect[1].value

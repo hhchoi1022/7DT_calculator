@@ -189,6 +189,14 @@ class RequestFile:
         return float(hours) if hours is not None else None
 
     @property
+    def dither_arcsec(self) -> float:
+        """Dithering step of the project (data/projects.json 'dither_arcsec'; 0 when absent)."""
+        try:
+            return float(self.project.get('dither_arcsec') or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
     def exposure_h(self) -> float:
         return sum(t.exposure_s for t in self.targets) / 3600.0
 
@@ -490,6 +498,7 @@ class NightTable:
     win_ends: np.ndarray
     moon: np.ndarray               # (nights,) Moon illumination
     moon_ok: np.ndarray            # (nights,) suits the proposal's sky background
+    hours_any: np.ndarray = None   # (nights,) hours during which at least one target is above the limit (requested windows ignored)
 
     def target_intervals(self, i: int, j: int) -> list:
         """Intervals (hours after twilight) of target j during night i in which it is above the limit and
@@ -554,9 +563,51 @@ def night_table(req: RequestFile, grid: vis.SeasonGrid, moon: np.ndarray, min_al
             if w.timed:
                 win_s[:, j, kk], win_e[:, j, kk] = w.night_intervals(grid)
                 kk += 1
+    hours_any = np.zeros(n)
+    for i in range(n):
+        ups = [(s_, e_) for j in range(m) for s_, e_ in zip(starts[i, j], ends[i, j]) if not math.isnan(s_)]
+        hours_any[i] = interval_hours(merge_intervals(ups)) if ups else 0.0
     return NightTable(dates=list(grid.dates), night_hours=(grid.end_jd - grid.start_jd) * 24.0, max_alt=alt['max_alt'], transit=alt['transit'],
                       at_hours=alt['at_hours'], culmination=alt['culmination'], hours=hours, starts=starts, ends=ends, requested=requested,
-                      win_starts=win_s, win_ends=win_e, moon=moon, moon_ok=moon_allowed(req.sky_background, moon))
+                      win_starts=win_s, win_ends=win_e, moon=moon, moon_ok=moon_allowed(req.sky_background, moon), hours_any=hours_any)
+
+
+STRIP_CATEGORIES = (('none', 'not observable', '#ffffff'), ('obs', 'observable (> 0 h)', '#c7e9c0'), ('good', f'≥ {GOOD_HOURS:g} h observable', '#41ab5d'),
+                    ('win_obs', 'window set, observable', '#9ecae1'), ('win_good', f'window set, ≥ {GOOD_HOURS:g} h', '#2171b5'),
+                    ('win_none', 'window set, not observable', '#d9d9d9'), ('moon', 'Moon unsuitable', '#fff1a8'), ('conflict', 'conflict', '#d62728'))
+
+
+def strip_categories(hours: np.ndarray, window: np.ndarray, moon_ok: np.ndarray | None = None) -> np.ndarray:
+    """
+    Category index per night for the strip charts (see STRIP_CATEGORIES): observable hours in shades of green,
+    nights inside the window in shades of blue, grey when the window covers a night the target never rises,
+    yellow when the Moon condition fails (only when `moon_ok` is given).
+    """
+    hours = np.asarray(hours, float)
+    window = np.asarray(window, bool)
+    cat = np.zeros(hours.shape, int)
+    cat[hours > 1e-9] = 1
+    cat[hours >= GOOD_HOURS] = 2
+    cat[window & (hours > 1e-9)] = 3
+    cat[window & (hours >= GOOD_HOURS)] = 4
+    cat[window & ~(hours > 1e-9)] = 5
+    if moon_ok is not None:
+        cat[~np.asarray(moon_ok, bool)] = 6
+    return cat
+
+
+def target_rows(requests: list) -> list:
+    """One row per requested target set of every file: the combined table of the programme."""
+    rows = []
+    for req in requests:
+        for t in req.targets:
+            rows.append({'Project': req.key, 'PI': req.lead_pi, 'Request type': req.observation, 'Mode': t.mode, 'Submode': t.submode,
+                         'Sky background': req.sky_background, 'Target': t.display, 'Type': t.target_type, 'Tile': t.tile_id,
+                         'RA (°)': None if t.ra is None else round(t.ra, 5), 'Dec (°)': None if t.dec is None else round(t.dec, 5),
+                         'Exptime (s)': t.exptime, 'Frames': t.nframes, 'Orders': t.n_orders, 'Total exposure (s)': round(t.exposure_s, 1),
+                         'Total exposure (h)': round(t.exposure_s / 3600.0, 2), 'With overhead (h)': round(t.total_s / 3600.0, 2),
+                         'dither_arcsec': req.dither_arcsec, 'OBS_WINDOW': t.window_text, 'Note': t.note, 'Issues': '; '.join(t.issues), 'File': req.name})
+    return rows
 
 
 # ------------------------------------------------------------------ the operator's plan
@@ -739,7 +790,8 @@ def schedule_rows(requests: list, plans: dict) -> list:
         for t in req.targets:
             rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'type': t.target_type,
                          'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5), 'mode': t.mode_text,
-                         'exptime': t.exptime, 'nframes': t.nframes, 'total_h': round(t.total_s / 3600.0, 2), 'requested_windows': t.window_text,
+                         'exptime': t.exptime, 'nframes': t.nframes, 'exposure_h': round(t.exposure_s / 3600.0, 2), 'total_h': round(t.total_s / 3600.0, 2),
+                         'dither_arcsec': req.dither_arcsec, 'requested_windows': t.window_text,
                          'obsdate_window_start': plan.settings.start.isoformat() if plan and plan.settings.enabled else '',
                          'obsdate_window_end': plan.settings.end.isoformat() if plan and plan.settings.enabled else '',
                          'hours_per_night': plan.settings.hours_per_night if plan and plan.settings.enabled else None,

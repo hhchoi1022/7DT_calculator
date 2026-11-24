@@ -19,7 +19,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
 | Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
-| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects, shows per project the PI / request type / mode / sky background / allocation / requested time with overheads, the targets with their nightly visibility over the programme period (max altitude or observable hours, shaded OBS_WINDOW / visibility / Moon windows), lets the operator set the `obsdate_window`, hours per night and night count of every project, and checks on which nights the planned projects compete for the same time of night; the schedule is saved next to the request files |
+| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects and lists every requested target set in one table (mode, total exposure = exptime x frames x orders, overhead, `dither_arcsec` per project, OBS_WINDOW); per project PI / request type / mode / sky background / allocation / requested time, the operator's `obsdate_window`, hours per night and night count; visibility of any chosen targets (several projects at once) over the programme period as curves (max altitude or observable hours) plus per-target strips (observable hours in greens, requested OBS_WINDOW in blues, Moon in yellow); a per-project, per-night strip chart (greens = a target is up, blues = inside the planned window) with the nights on which the planned projects compete for the same time of night; the schedule is saved next to the request files |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
 overridden with `PORT=...`; the ports in use are assigned by the operator and are not part of this
@@ -149,6 +149,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   planned hours per night = min(hours, union of the targets' intervals). The conflict check packs each night
   pre-emptively, least slack first (`phase2.pack_night_slots`), and lists nights where a project gets more
   than a minute less than planned. The schedule is saved as `schedule.json` in the request folder.
+  Strip charts use `phase2.strip_categories` (none / observable / >= 3 h / the same inside a window / window
+  without the target up / Moon unsuitable / conflict) drawn as one Plotly heatmap with a discrete colour
+  scale. `dither_arcsec` comes from `data/projects.json` (per project; 0 when absent).
 
 ## Working rules (decisions already made with the telescope operator; keep them)
 
@@ -168,9 +171,11 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
-- Scheduling page: projects table with single-row selection (tick the box) plus a selectbox; the selected
-  project's settings widgets are keyed by project so switching projects keeps every project's values; the
-  page reruns once after a settings change so the projects table shows the new plan.
+- Scheduling page: the combined target table comes first; projects table with single-row selection (tick
+  the box) plus a selectbox; the selected project's settings widgets are keyed by project so switching
+  projects keeps every project's values; the page reruns once after a settings change so the projects
+  table shows the new plan. The visibility section plots the chosen targets of the chosen projects in one
+  figure (no per-target figures, no nightly-plan figure).
 - New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
 
 ## Gotchas (learned the hard way)
@@ -187,6 +192,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   before the grid is drawn, so one click costs one script run.
 - Streamlit's fixed header swallows clicks in the top ~60 px of the viewport (matters for browser tests
   that scroll a grid to the top). Canvas grids need a hover before the click.
+- Streamlit magic: a bare expression statement in a page file that is not a plain call (e.g. a conditional
+  expression `a() if x else b()`) is passed to `st.write()`; with a Plotly figure that draws an extra copy
+  of the figure each time. Use if statements or assign the result.
 - Plotly: never call `fig.add_shape` / `fig.add_annotation` in a loop (quadratic); build lists and assign
   them once in `update_layout`. Downsample curves before sending them to the browser. Legend line
   samples follow the trace width only with `itemsizing='trace'`.
