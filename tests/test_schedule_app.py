@@ -166,14 +166,29 @@ def test_nights_and_plan():
     phase2.place_epochs(crowded, 40)
     conflicts = phase2.night_conflicts(crowded, list(grid.dates))
     assert len(conflicts) == 1 and conflicts[0]['date'] == date(2026, 12, 1) and conflicts[0]['short']       # three long epochs on one night do not fit
-    rows = phase2.schedule_rows([req], {phase2.target_key(req, req.targets[0]): plan})
+    rows = phase2.schedule_rows([req], {plan.key: plan})
     assert len(rows) == 3 and rows[0]['obs_startdate'] == '2026-12-01' and rows[0]['count'] == 3 and rows[0]['target_epoch'] == 3 and rows[1]['obs_startdate'] == ''
+    # a target set split into two parts: frames compared as a whole, one plan per part
+    parts = [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2), phase2.TargetSettings(start=date(2026, 12, 20), end=date(2026, 12, 31), count=3, epochs=1)]
+    split = phase2.make_target_plans(req, 0, table, parts, use_moon=False)
+    assert [p.part for p in split] == [1, 2] and [p.key for p in split] == ['test|NGC 253#1', 'test|NGC 253#2'] if req.key == 'test' else True
+    assert all(p.ok for p in split) and all('frames planned' not in p.status for p in split)           # 3 x 2 + 3 x 1 = 9 = NUM_FRAMES
+    uneven = phase2.make_target_plans(req, 0, table, parts[:1], use_moon=False)
+    assert '6 frames planned, 9 requested' in uneven[0].status
+    d = {p.key: p for p in split}
+    assert [p.part for p in phase2.plans_of(d, req, 0)] == [1, 2] and phase2.plans_of(d, req, 1) == []
+    rows = phase2.schedule_rows([req], d)
+    assert [(r['part'], r['parts']) for r in rows[:2]] == [(1, 2), (2, 2)] and rows[2]['parts'] == 1
 
 
 def test_schedule_file_roundtrip(tmp_path):
-    settings = {'26001|A': phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 3, 4), count=40, epochs=5, enabled=True)}
+    settings = {'26001|A': [phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 3, 4), count=40, epochs=5, enabled=True)],
+                '26001|B': [phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 2, 1), count=10, epochs=2), phase2.TargetSettings(start=date(2027, 3, 2), end=date(2027, 4, 1), count=5, epochs=4)]}
     phase2.save_schedule(tmp_path, settings)
     assert phase2.load_schedule(tmp_path) == settings
+    import json
+    raw = json.loads((tmp_path / phase2.SCHEDULE_FILE).read_text())
+    assert isinstance(raw['26001|A'], dict) and isinstance(raw['26001|B'], list) and len(raw['26001|B']) == 2
     (tmp_path / phase2.SCHEDULE_FILE).write_text('{"old": {"start": "2027-01-01", "end": "2027-02-01", "hours_per_night": 1}}')
     assert phase2.load_schedule(tmp_path) == {}                                                 # an older layout is ignored
     (tmp_path / 'req.txt').write_text(SAMPLE)

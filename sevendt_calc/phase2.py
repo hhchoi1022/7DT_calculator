@@ -656,6 +656,10 @@ def target_key(req: RequestFile, t: RequestTarget) -> str:
     return f'{req.key}|{t.display}'
 
 
+def part_key(tkey: str, part: int) -> str:
+    return f'{tkey}#{part}'
+
+
 def default_target_settings(req: RequestFile, t: RequestTarget, table: NightTable, j: int, use_moon: bool = True) -> TargetSettings:
     """
     A first entry: the requested window span, all frames in one epoch when one visit fits into the best
@@ -683,7 +687,7 @@ def default_target_settings(req: RequestFile, t: RequestTarget, table: NightTabl
 
 @dataclass
 class TargetPlan:
-    key: str
+    key: str                       # part key: '<project>|<target>#<part>'
     req: RequestFile
     j: int
     settings: TargetSettings
@@ -693,10 +697,15 @@ class TargetPlan:
     intervals: list                # per night: the target's intervals (hours after twilight) usable for the epoch
     issues: list                   # blocking: the plan cannot be carried out as entered
     warnings: list = field(default_factory=list)   # informational (frames differ from the request, range outside OBS_WINDOW)
+    part: int = 1                  # part number within the target set (1 unless the operator split the set)
 
     @property
     def target(self) -> RequestTarget:
         return self.req.targets[self.j]
+
+    @property
+    def target_key(self) -> str:
+        return target_key(self.req, self.target)
 
     @property
     def frames_planned(self) -> int:
@@ -730,7 +739,8 @@ class TargetPlan:
 
 
 def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: TargetSettings, use_moon: bool = True,
-                     oh_config: oh.OverheadConfig | None = None) -> TargetPlan:
+                     oh_config: oh.OverheadConfig | None = None, part: int = 1, check_frames: bool = True) -> TargetPlan:
+    """The plan of one part of a target set (most targets have a single part; see make_target_plans)."""
     t = req.targets[j]
     n = len(table.dates)
     issues, warnings = [], []
@@ -749,7 +759,7 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
             issues.append('count and target_epoch must be at least 1')
         if not t.has_coordinates:
             issues.append('no coordinates')
-        if t.nframes is not None and settings.count * settings.epochs != t.nframes:
+        if check_frames and t.nframes is not None and settings.count * settings.epochs != t.nframes:
             warnings.append(f'{settings.count * settings.epochs} frames planned, {t.nframes} requested')
         idx = np.flatnonzero(feasible)
         if idx.size >= settings.epochs >= 1:
@@ -767,7 +777,31 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
             outside = in_range & ~table.requested[:, j]
             if outside.any():
                 warnings.append(f'{int(outside.sum())} night(s) of the range are outside the requested OBS_WINDOW')
-    return TargetPlan(key=target_key(req, t), req=req, j=j, settings=settings, epoch_h=epoch_h, feasible=feasible, placed=placed, intervals=intervals, issues=issues, warnings=warnings)
+    return TargetPlan(key=part_key(target_key(req, t), part), req=req, j=j, settings=settings, part=part, epoch_h=epoch_h, feasible=feasible, placed=placed,
+                      intervals=intervals, issues=issues, warnings=warnings)
+
+
+def make_target_plans(req: RequestFile, j: int, table: NightTable, parts: list, use_moon: bool = True, oh_config: oh.OverheadConfig | None = None) -> list:
+    """
+    The plans of every part of a target set. A target set is usually one part (count x epochs); when the
+    operator splits it, the parts carry their own ranges, counts and epochs and the frames of the enabled
+    parts are compared with the request as a whole.
+    """
+    plans = [make_target_plan(req, j, table, s, use_moon, oh_config, part=n, check_frames=False) for n, s in enumerate(parts, start=1)]
+    t = req.targets[j]
+    on = [p for p in plans if p.settings.enabled]
+    if on and t.nframes is not None:
+        total = sum(p.frames_planned for p in on)
+        if total != t.nframes:
+            text = f'{total} frames planned' + (f' in {len(on)} parts' if len(on) > 1 else '') + f', {t.nframes} requested'
+            for p in on:
+                p.warnings.append(text)
+    return plans
+
+
+def plans_of(plans: dict, req: RequestFile, j: int) -> list:
+    """Every part plan of target j of the request, in part order."""
+    return sorted((p for p in plans.values() if p.req is req and p.j == j), key=lambda p: p.part)
 
 
 def place_epochs(plans: dict, n_nights: int) -> np.ndarray:
@@ -852,7 +886,7 @@ def night_conflicts(plans: dict, dates: list) -> list:
 
 # ------------------------------------------------------------------ schedule file
 def load_schedule(folder: Path | str) -> dict:
-    """Target key -> TargetSettings saved earlier (entries in another layout are skipped)."""
+    """Target key -> [TargetSettings, ...] (its parts) saved earlier; entries in another layout are skipped."""
     path = Path(folder) / SCHEDULE_FILE
     if not path.is_file():
         return {}
@@ -862,37 +896,48 @@ def load_schedule(folder: Path | str) -> dict:
         return {}
     out = {}
     for k, v in raw.items():
-        if str(k).startswith('_') or not isinstance(v, dict):
+        if str(k).startswith('_'):
             continue
-        try:
-            out[str(k)] = TargetSettings.from_dict(v)
-        except (KeyError, ValueError):
-            continue
+        items = v if isinstance(v, list) else [v]
+        parts = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                parts.append(TargetSettings.from_dict(item))
+            except (KeyError, ValueError):
+                continue
+        if parts:
+            out[str(k)] = parts
     return out
 
 
 def save_schedule(folder: Path | str, settings: dict) -> Path:
+    """settings: target key -> [TargetSettings, ...]; a single part is written as one object, several as a list."""
     path = Path(folder) / SCHEDULE_FILE
     data = {'_description': 'Operator schedule of the Phase-2 requests: per requested target set (key = project|target) the obs_startdate / obs_enddate '
-                            '(local nights, inclusive), frames per epoch (count) and number of epochs (target_epoch).',
+                            '(local nights, inclusive), frames per epoch (count) and number of epochs (target_epoch); a list when the target is split into parts.',
             '_saved': datetime.now().isoformat(timespec='seconds')}
-    data.update({k: v.as_dict() for k, v in settings.items()})
+    for k, parts in settings.items():
+        items = parts if isinstance(parts, list) else [parts]
+        data[k] = items[0].as_dict() if len(items) == 1 else [p.as_dict() for p in items]
     path.write_text(json.dumps(data, indent=2))
     return path
 
 
 def schedule_rows(requests: list, plans: dict) -> list:
-    """One row per target set with the operator's entries: what goes into the request system."""
+    """One row per part of every target set with the operator's entries: what goes into the request system."""
     rows = []
     for req in requests:
-        for t in req.targets:
-            p = plans.get(target_key(req, t))
-            s = p.settings if p else None
-            rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'type': t.target_type, 'tile': t.tile_id,
-                         'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5), 'mode': t.mode_text,
-                         'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
-                         'obs_startdate': s.start.isoformat() if s and s.enabled else '', 'obs_enddate': s.end.isoformat() if s and s.enabled else '',
-                         'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None,
-                         'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
-                         'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})
+        for j, t in enumerate(req.targets):
+            parts = plans_of(plans, req, j) or [None]
+            for p in parts:
+                s = p.settings if p else None
+                rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'part': p.part if p else 1, 'parts': len(parts),
+                             'type': t.target_type, 'tile': t.tile_id, 'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5),
+                             'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
+                             'obs_startdate': s.start.isoformat() if s and s.enabled else '', 'obs_enddate': s.end.isoformat() if s and s.enabled else '',
+                             'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None,
+                             'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
+                             'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})
     return rows

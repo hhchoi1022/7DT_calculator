@@ -1,6 +1,7 @@
 """
 7DT Scheduling (operator page): every target requested in the Phase-2 files of the open-time programme in
-one editable table (obs_startdate, obs_enddate, frames per epoch, number of epochs), the check that each
+one editable table (obs_startdate, obs_enddate, frames per epoch, number of epochs; a target set may be split
+into parts with their own values), the check that each
 target is up long enough inside its range for the entered plan, a load-balanced assumption of which nights
 the automatic scheduler would use, visibility of any chosen targets over the programme period, and the
 nights on which the assumed epochs compete for the same time of night.
@@ -160,17 +161,23 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
     for req, table, j in items:
         t = req.targets[j]
         label = f'{req.key} {t.display}'
-        plan = plans.get(phase2.target_key(req, t))
-        s = plan.settings if plan else None
+        parts = [p for p in phase2.plans_of(plans, req, j) if p.settings.enabled]
+        n_nights = len(table.dates)
+        rng, ep, texts = np.zeros(n_nights, bool), np.zeros(n_nights, bool), [''] * n_nights
+        for p in parts:
+            rng |= np.array([p.settings.start <= d <= p.settings.end for d in table.dates])
+            ep |= p.placed
+            for i in np.flatnonzero(p.placed):
+                texts[i] = f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d} ({p.epoch_h:.2f} h' + (f', part {p.part}' if len(parts) > 1 else '') + ')'
         c = phase2.strip_categories(table.hours[:, j], table.moon_ok if show_moon else None)
         labels.append(label)
         cats.append(c)
-        ranges.append(np.array([bool(s and s.enabled and s.start <= d <= s.end) for d in table.dates]))
-        epochs.append(plan.placed if plan and s.enabled else np.zeros(len(table.dates), bool))
+        ranges.append(rng)
+        epochs.append(ep)
         requested.append(table.requested[:, j])
         hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested' if w else '') + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
                       for d, h, a, w, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], table.moon, table.moon_ok)])
-        epoch_hover.append([f'{label}: epoch assumed on {d:%Y-%m-%d} ({plan.epoch_h:.2f} h)' if plan else '' for d in table.dates])
+        epoch_hover.append(texts)
     if items:
         fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
         fig.add_trace(line_trace(dates, [k + 0.3 for k in range(n)], requested, 'requested OBS_WINDOW', REQUEST_COLOR, 1.5), row=2, col=1)
@@ -196,14 +203,13 @@ def projects_figure(requests: list, tables: dict, plans: dict, conflicts: list, 
         table = tables[req.key]
         n = len(table.dates)
         rng, ep, names = np.zeros(n, bool), np.zeros(n, bool), [[] for _ in range(n)]
-        for t in req.targets:
-            p = plans.get(phase2.target_key(req, t))
-            if p is None or not p.settings.enabled:
+        for p in plans.values():
+            if p.req is not req or not p.settings.enabled:
                 continue
             rng |= np.array([p.settings.start <= d <= p.settings.end for d in table.dates])
             ep |= p.placed
             for i in np.flatnonzero(p.placed):
-                names[i].append(f'{t.display} ({p.epoch_h:.1f} h)')
+                names[i].append(f'{p.target.display} ({p.epoch_h:.1f} h)')
         c = phase2.strip_categories(table.hours_any, table.moon_ok if show_moon else None)
         label = f'{req.key} {req.lead_pi}'
         labels.append(label)
@@ -262,16 +268,19 @@ def night_figure(plans: dict, grid: vis.SeasonGrid, i: int) -> go.Figure:
 
 # ------------------------------------------------------------------ the plan table
 def base_frame(requests: list, settings: dict) -> pd.DataFrame:
+    """One row per part of every target set (settings: target key -> [TargetSettings, ...])."""
     rows = []
     for req in requests:
         for t in req.targets:
             k = phase2.target_key(req, t)
-            s = settings[k]
-            rows.append({'key': k, 'Project': req.key, 'PI': req.lead_pi, 'Target': t.display, 'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
-                         'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
-                         'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
-                         'OBS_WINDOW': t.window_text, 'Note': t.note,
-                         'obs_startdate': s.start, 'obs_enddate': s.end, 'count': int(s.count), 'target_epoch': int(s.epochs), 'scheduled': bool(s.enabled)})
+            parts = settings[k]
+            for n, s in enumerate(parts, start=1):
+                rows.append({'key': phase2.part_key(k, n), 'Project': req.key, 'PI': req.lead_pi, 'Target': t.display, 'Part': f'{n}/{len(parts)}' if len(parts) > 1 else '',
+                             'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
+                             'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
+                             'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
+                             'OBS_WINDOW': t.window_text, 'Note': t.note,
+                             'obs_startdate': s.start, 'obs_enddate': s.end, 'count': int(s.count), 'target_epoch': int(s.epochs), 'scheduled': bool(s.enabled)})
     return pd.DataFrame(rows)
 
 
@@ -285,18 +294,46 @@ def _as_date(value, fallback: date) -> date:
 
 
 def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
-    out = {}
+    """The edited rows back into target key -> [TargetSettings, ...] (rows of a target set are consecutive, in part order)."""
+    out = {k: [] for k in previous}
     for _, r in df.iterrows():
-        k = r['key']
-        old = previous[k]
+        tkey, _, n = str(r['key']).rpartition('#')
+        n = int(n) - 1
+        old = previous[tkey][n] if n < len(previous[tkey]) else previous[tkey][-1]
         try:
             count = int(r['count']) if not pd.isna(r['count']) else old.count
             epochs = int(r['target_epoch']) if not pd.isna(r['target_epoch']) else old.epochs
         except (TypeError, ValueError):
             count, epochs = old.count, old.epochs
-        out[k] = phase2.TargetSettings(start=_as_date(r['obs_startdate'], old.start), end=_as_date(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
-                                       enabled=bool(r['scheduled']))
-    return out
+        out[tkey].append(phase2.TargetSettings(start=_as_date(r['obs_startdate'], old.start), end=_as_date(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
+                                               enabled=bool(r['scheduled'])))
+    return {k: v or previous[k] for k, v in out.items()}
+
+
+def remount_editor(requests: list) -> None:
+    ss = st.session_state
+    ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
+    ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
+
+
+def split_controls(requests: list) -> None:
+    """Split a chosen target set into parts (each with its own range, count and epochs) or merge its parts again."""
+    ss = st.session_state
+    options = [(phase2.target_key(req, t), f'{req.key} {t.display}') for req in requests for t in req.targets]
+    labels = dict(options)
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 3])
+    tkey = c1.selectbox('Target set to split', [k for k, _ in options], format_func=lambda k: labels[k] + (f' ({len(ss["sch_tsettings"][k])} parts)' if len(ss['sch_tsettings'][k]) > 1 else ''), key='sch_split_target')
+    parts = ss['sch_tsettings'][tkey]
+    if c2.button('Add a part', key='sch_split_add', help='Adds a part with the same range as the last one; then edit its dates, count and epochs in the table.'):
+        last = parts[-1]
+        parts.append(phase2.TargetSettings(start=last.start, end=last.end, count=last.count, epochs=1, enabled=last.enabled))
+        remount_editor(requests)
+        st.rerun()
+    if c3.button('Remove last part', key='sch_split_remove', disabled=len(parts) < 2):
+        parts.pop()
+        remount_editor(requests)
+        st.rerun()
+    c4.caption('A split target set has one row per part; its parts are compared with the requested frames as a whole. Most target sets stay in one part.')
 
 
 def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
@@ -306,11 +343,11 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     c1, c2, c3 = st.columns([1.3, 1, 3])
     use_moon = c1.checkbox('Apply the Moon condition', value=True, key='sch_use_moon', help='Only nights whose Moon illumination suits the project\'s sky background count (Dark ≤ 0.2, Gray 0.2–0.8, Bright ≥ 0.8).')
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
-        ss['sch_tsettings'] = {phase2.target_key(req, t): phase2.default_target_settings(req, t, tables[req.key], j, use_moon) for req in requests for j, t in enumerate(req.targets)}
-        ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
-        ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
+        ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
+        remount_editor(requests)
     c3.caption('Edit obs_startdate / obs_enddate (local nights, inclusive), count (frames per filter in one epoch) and target_epoch (number of epochs). '
                'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is above the limit for that long.')
+    split_controls(requests)
     column_config = {
         'key': None, 'RA (°)': st.column_config.NumberColumn(format='%.4f'), 'Dec (°)': st.column_config.NumberColumn(format='%.4f'),
         'Exptime (s)': st.column_config.NumberColumn(format='%g'),
@@ -329,8 +366,8 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     plans = {}
     for req in requests:
         for j, t in enumerate(req.targets):
-            k = phase2.target_key(req, t)
-            plans[k] = phase2.make_target_plan(req, j, tables[req.key], ss['sch_tsettings'][k], use_moon)
+            for p in phase2.make_target_plans(req, j, tables[req.key], ss['sch_tsettings'][phase2.target_key(req, t)], use_moon):
+                plans[p.key] = p
     phase2.place_epochs(plans, phase2.PROGRAM_NIGHTS)
     check_table(plans)
     return plans, use_moon
@@ -338,9 +375,13 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
 
 def check_table(plans: dict) -> None:
     rows = []
+    n_parts = {}
+    for p in plans.values():
+        n_parts[p.target_key] = max(n_parts.get(p.target_key, 0), p.part)
     for p in plans.values():
         t, s = p.target, p.settings
-        rows.append({'Project': p.req.key, 'Target': t.display, 'Mode': t.mode_text, 'Exptime (s)': t.exptime, 'count × epochs': f'{s.count} × {s.epochs} = {p.frames_planned}',
+        rows.append({'Project': p.req.key, 'Target': t.display, 'Part': f'{p.part}/{n_parts[p.target_key]}' if n_parts[p.target_key] > 1 else '', 'Mode': t.mode_text,
+                     'Exptime (s)': t.exptime, 'count × epochs': f'{s.count} × {s.epochs} = {p.frames_planned}',
                      'Requested frames': t.nframes, 'Epoch (h)': round(p.epoch_h, 2), 'Planned (h)': round(p.planned_h, 2), 'Requested (h)': round(p.required_h, 2),
                      'Feasible nights': p.n_feasible, 'Epochs placed': p.n_placed, 'Status': p.status, '_flag': 'off' if not s.enabled else ('error' if p.issues else ('warn' if p.warnings else ''))})
     df = pd.DataFrame(rows)
@@ -349,13 +390,13 @@ def check_table(plans: dict) -> None:
     n_err = int((df['_flag'] == 'error').sum())
     n_warn = int((df['_flag'] == 'warn').sum())
     n_on = int((df['_flag'] != 'off').sum())
-    msg = f'{n_on} of {len(df)} target sets scheduled; planned {sum(p.planned_h for p in plans.values() if p.settings.enabled):.1f} h in total.'
+    msg = f'{n_on} of {len(df)} rows scheduled ({len(n_parts)} target sets); planned {sum(p.planned_h for p in plans.values() if p.settings.enabled):.1f} h in total.'
     if n_err:
-        st.error(f'{n_err} target set(s) cannot be observed as entered (red). {msg}')
+        st.error(f'{n_err} row(s) cannot be observed as entered (red). {msg}')
     elif n_warn:
-        st.warning(f'Every scheduled target set fits; {n_warn} with a remark (yellow). {msg}')
+        st.warning(f'Every scheduled row fits; {n_warn} with a remark (yellow). {msg}')
     else:
-        st.success(f'Every scheduled target set fits. {msg}')
+        st.success(f'Every scheduled row fits. {msg}')
     style = df.drop(columns=['_flag']).style.apply(lambda col: [RED if f == 'error' else (YELLOW if f == 'warn' else '') for f in df['_flag']], axis=0)
     st.dataframe(style, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 420),
                  column_config={'Epoch (h)': st.column_config.NumberColumn(format='%.2f'), 'Planned (h)': st.column_config.NumberColumn(format='%.2f'),
@@ -366,7 +407,7 @@ def check_table(plans: dict) -> None:
 def projects_table(requests: list, plans: dict) -> pd.DataFrame:
     rows = []
     for req in requests:
-        ps = [plans[phase2.target_key(req, t)] for t in req.targets]
+        ps = [p for p in plans.values() if p.req is req]
         on = [p for p in ps if p.settings.enabled]
         planned = sum(p.planned_h for p in on)
         bad = sum(1 for p in on if p.issues)
@@ -473,21 +514,24 @@ def export_section(requests: list, plans: dict, folder: Path) -> None:
         c1.caption(f'{len(changed)} target set(s) changed since the last save.')
     rows = phase2.schedule_rows(requests, plans)
     c2.download_button('Download plan table (CSV)', data=pd.DataFrame(rows).to_csv(index=False).encode(), file_name='7dt_schedule_targets.csv', mime='text/csv', key='sch_csv')
-    payload = {k: v.as_dict() for k, v in ss['sch_tsettings'].items()}
+    payload = {k: (v[0].as_dict() if len(v) == 1 else [x.as_dict() for x in v]) for k, v in ss['sch_tsettings'].items()}
     c3.download_button('Download schedule (JSON)', data=json.dumps(payload, indent=2).encode(), file_name='7dt_schedule.json', mime='application/json', key='sch_json')
     upload = c4.file_uploader('Load a schedule JSON', type=['json'], key='sch_upload', label_visibility='collapsed')
     if upload is not None and ss.get('sch_uploaded') != upload.file_id:
         try:
             raw = json.loads(upload.getvalue().decode())
-            loaded = {str(k): phase2.TargetSettings.from_dict(v) for k, v in raw.items() if isinstance(v, dict) and not str(k).startswith('_')}
-        except (ValueError, KeyError) as exc:
+            loaded = {}
+            for k, v in raw.items():
+                if str(k).startswith('_'):
+                    continue
+                loaded[str(k)] = [phase2.TargetSettings.from_dict(x) for x in (v if isinstance(v, list) else [v])]
+        except (ValueError, KeyError, TypeError) as exc:
             st.error(f'Not a schedule file: {exc}')
         else:
             for k, v in loaded.items():
-                if k in ss['sch_tsettings']:
+                if k in ss['sch_tsettings'] and v:
                     ss['sch_tsettings'][k] = v
-            ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
-            ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
+            remount_editor(requests)
             ss['sch_uploaded'] = upload.file_id
             st.rerun()
 
@@ -515,10 +559,9 @@ def main():
     ss = st.session_state
     if ss.get('sch_signature') != (signature, projects_sig) or 'sch_tsettings' not in ss:
         saved = phase2.load_schedule(folder)
-        ss['sch_tsettings'] = {phase2.target_key(req, t): saved.get(phase2.target_key(req, t)) or phase2.default_target_settings(req, t, tables[req.key], j)
+        ss['sch_tsettings'] = {phase2.target_key(req, t): saved.get(phase2.target_key(req, t)) or [phase2.default_target_settings(req, t, tables[req.key], j)]
                                for req in requests for j, t in enumerate(req.targets)}
-        ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
-        ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
+        remount_editor(requests)
         ss['sch_signature'] = (signature, projects_sig)
     st.caption(f'{len(requests)} request files in {folder} · programme {phase2.PROGRAM_START} to {phase2.PROGRAM_END} · altitude limit {MIN_ALT:g}° · '
                f'dates are local nights (evening date); times UTC.')
