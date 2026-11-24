@@ -200,7 +200,12 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
                            line=dict(color=WINDOW_COLOR, width=2, dash='dot'), layer='above'))
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
     shapes.append(dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash')))
-    category_legend(['obs', 'good'] + (['moon'] if moon_shown and any(not tb.moon_ok.all() for _, tb, _ in items) else []), fig, row=2, col=1)
+    legend = [('max altitude ≥ 30°' if mode == 'alt' else 'observable (> 0 h)', phase2.STRIP_CATEGORIES[CAT_INDEX['obs']][2]),
+              ('transit during the night' if mode == 'alt' else f'≥ {phase2.GOOD_HOURS:g} h observable', phase2.STRIP_CATEGORIES[CAT_INDEX['good']][2])]
+    if moon_shown and any(not tb.moon_ok.all() for _, tb, _ in items):
+        legend.append((phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][1], phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][2]))
+    for label, color in legend:                    # the strip legend follows the y axis: the same greens mean altitude / transit or hours
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'), row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name='obs_starttime to obs_endtime', hoverinfo='skip'), row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#1f77b4', width=2), name='OBS_WINDOW (requested)', hoverinfo='skip'), row=2, col=1)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
