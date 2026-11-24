@@ -502,6 +502,7 @@ class NightTable:
     moon_ok: np.ndarray            # (nights,) suits the proposal's sky background
     hours_any: np.ndarray = None   # (nights,) hours during which at least one target is above the limit (requested windows ignored)
     timed: np.ndarray = None       # (targets,) the target's windows carry times of day
+    grid: object = None            # the SeasonGrid the table was built on
 
     def target_intervals(self, i: int, j: int, respect_dates: bool = True) -> list:
         """Intervals (hours after twilight) of target j during night i in which it is above the limit and
@@ -577,7 +578,7 @@ def night_table(req: RequestFile, grid: vis.SeasonGrid, moon: np.ndarray, min_al
     return NightTable(dates=list(grid.dates), night_hours=(grid.end_jd - grid.start_jd) * 24.0, max_alt=alt['max_alt'], transit=alt['transit'],
                       at_hours=alt['at_hours'], culmination=alt['culmination'], hours=hours, starts=starts, ends=ends, requested=requested,
                       win_starts=win_s, win_ends=win_e, moon=moon, moon_ok=moon_allowed(req.sky_background, moon), hours_any=hours_any,
-                      timed=np.array([t.timed for t in req.targets], bool))
+                      timed=np.array([t.timed for t in req.targets], bool), grid=grid)
 
 
 STRIP_CATEGORIES = (('none', 'not observable', '#ffffff'), ('obs', 'observable (> 0 h)', '#c7e9c0'), ('good', f'≥ {GOOD_HOURS:g} h observable', '#41ab5d'),
@@ -634,22 +635,72 @@ def epoch_hours(t: RequestTarget, count: int, oh_config: oh.OverheadConfig | Non
     return _EPOCH_CACHE[key]
 
 
+def as_datetime(value) -> datetime:
+    """A date or datetime (or their ISO strings) as a naive UTC datetime; a date means midnight (= 'that whole local night')."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo is not None else value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    text = str(value).strip().replace('T', ' ')
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"'{value}' is not a date or a date with a UTC time")
+
+
+def time_text(value: datetime) -> str:
+    """'2027-02-24' for midnight (a whole local night), '2027-02-24T03:30' otherwise."""
+    return value.strftime('%Y-%m-%d') if (value.hour, value.minute, value.second) == (0, 0, 0) else value.strftime('%Y-%m-%dT%H:%M')
+
+
 @dataclass
 class TargetSettings:
-    """What the operator enters for one requested target set."""
-    start: date                    # obs_startdate (local night)
-    end: date                      # obs_enddate (local night, inclusive)
+    """
+    What the operator enters for one requested target set. obs_startdate / obs_enddate are UTC; a value
+    without a time (midnight) means the whole local night of that date (so a date-only range covers the
+    nights of both dates), a value with a time cuts exactly there.
+    """
+    start: datetime                # obs_startdate
+    end: datetime                  # obs_enddate
     count: int                     # frames per filter in one epoch (visit)
     epochs: int                    # number of epochs (target_epoch)
     enabled: bool = True
 
+    def __post_init__(self):
+        self.start = as_datetime(self.start)
+        self.end = as_datetime(self.end)
+
+    @property
+    def start_night(self) -> date:
+        return self.start.date()
+
+    @property
+    def end_night(self) -> date:
+        return self.end.date()
+
     def as_dict(self) -> dict:
-        return {'obs_startdate': self.start.isoformat(), 'obs_enddate': self.end.isoformat(), 'count': int(self.count), 'target_epoch': int(self.epochs), 'enabled': bool(self.enabled)}
+        return {'obs_startdate': time_text(self.start), 'obs_enddate': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs), 'enabled': bool(self.enabled)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
-        return cls(start=date.fromisoformat(str(d['obs_startdate'])), end=date.fromisoformat(str(d['obs_enddate'])), count=int(d.get('count', 1)),
+        return cls(start=as_datetime(d['obs_startdate']), end=as_datetime(d['obs_enddate']), count=int(d.get('count', 1)),
                    epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)))
+
+    def bounds_jd(self, grid: vis.SeasonGrid) -> tuple[float, float]:
+        """The range as UTC Julian dates: midnight values expand to the evening / morning twilight of that local night."""
+        if (self.start.hour, self.start.minute) == (0, 0):
+            i = max(0, min((self.start.date() - grid.dates[0]).days, len(grid.dates) - 1))
+            lo = grid.start_jd[i] if self.start.date() >= grid.dates[0] else grid.start_jd[0] - 1.0
+        else:
+            lo = Time(self.start).jd
+        if (self.end.hour, self.end.minute) == (0, 0):
+            i = max(0, min((self.end.date() - grid.dates[0]).days, len(grid.dates) - 1))
+            hi = grid.end_jd[i] if self.end.date() <= grid.dates[-1] else grid.end_jd[-1] + 1.0
+        else:
+            hi = Time(self.end).jd
+        return float(lo), float(hi)
 
 
 def target_key(req: RequestFile, t: RequestTarget) -> str:
@@ -682,7 +733,7 @@ def default_target_settings(req: RequestFile, t: RequestTarget, table: NightTabl
             if epoch_hours(t, count) <= best:
                 break
     enabled = req.observation != 'ToO' and t.has_coordinates and t.exptime is not None and t.nframes is not None
-    return TargetSettings(start=start, end=end, count=max(count, 1), epochs=max(epochs, 1), enabled=enabled)
+    return TargetSettings(start=datetime.combine(start, datetime.min.time()), end=datetime.combine(end, datetime.min.time()), count=max(count, 1), epochs=max(epochs, 1), enabled=enabled)
 
 
 @dataclass
@@ -696,8 +747,9 @@ class TargetPlan:
     placed: np.ndarray             # (nights,) nights on which an epoch is assumed (spread evenly over the feasible nights)
     intervals: list                # per night: the target's intervals (hours after twilight) usable for the epoch
     issues: list                   # blocking: the plan cannot be carried out as entered
-    warnings: list = field(default_factory=list)   # informational (frames differ from the request, range outside OBS_WINDOW)
+    warnings: list = field(default_factory=list)   # informational (frames differ from the request)
     part: int = 1                  # part number within the target set (1 unless the operator split the set)
+    in_range: np.ndarray = None    # (nights,) the night overlaps obs_startdate .. obs_enddate
 
     @property
     def target(self) -> RequestTarget:
@@ -740,20 +792,35 @@ class TargetPlan:
 
 def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: TargetSettings, use_moon: bool = True,
                      oh_config: oh.OverheadConfig | None = None, part: int = 1, check_frames: bool = True) -> TargetPlan:
-    """The plan of one part of a target set (most targets have a single part; see make_target_plans)."""
+    """
+    The plan of one part of a target set (most targets have a single part; see make_target_plans). The
+    operator's obs_startdate .. obs_enddate is the master range: the requested OBS_WINDOW dates play no
+    role here (timed windows still fix the time of night).
+    """
     t = req.targets[j]
     n = len(table.dates)
+    grid = table.grid
     issues, warnings = [], []
     epoch_h = epoch_hours(t, settings.count, oh_config) if settings.count >= 1 else 0.0
-    in_range = np.array([settings.start <= d <= settings.end for d in table.dates], bool)
+    lo_jd, hi_jd = settings.bounds_jd(grid)
+    night_start = grid.start_jd
+    in_range = (grid.end_jd > lo_jd) & (grid.start_jd < hi_jd)
+    usable = in_range.copy()
     if use_moon:
-        in_range &= table.moon_ok
-    intervals = [table.target_intervals(i, j, respect_dates=False) if (in_range[i] and settings.enabled) else [] for i in range(n)]
+        usable &= table.moon_ok
+    intervals = []
+    for i in range(n):
+        if not (usable[i] and settings.enabled):
+            intervals.append([])
+            continue
+        lo_h, hi_h = (lo_jd - night_start[i]) * 24.0, (hi_jd - night_start[i]) * 24.0          # the range inside this night, hours after twilight
+        clipped = [(max(a, lo_h), min(b, hi_h)) for a, b in table.target_intervals(i, j, respect_dates=False)]
+        intervals.append([(a, b) for a, b in clipped if b - a > 1e-9])
     longest = np.array([max((hi - lo for lo, hi in iv), default=0.0) for iv in intervals])
     feasible = (longest >= epoch_h - 1e-9) & (longest > 0) if epoch_h > 0 else np.zeros(n, bool)
     placed = np.zeros(n, bool)
     if settings.enabled:
-        if settings.end < settings.start:
+        if settings.end <= settings.start and not (settings.end == settings.start and (settings.start.hour, settings.start.minute) == (0, 0)):
             issues.append('obs_enddate before obs_startdate')
         if settings.count < 1 or settings.epochs < 1:
             issues.append('count and target_epoch must be at least 1')
@@ -773,12 +840,8 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
                     issues.append(f'no night in the range with {epoch_h:.2f} h of the target above {MIN_ALT_TEXT} (longest {best:.2f} h)')
                 else:
                     issues.append(f'only {idx.size} of {settings.epochs} epochs fit (nights with {epoch_h:.2f} h of the target up)')
-        if t.windows and not any(w.timed for w in t.windows):
-            outside = in_range & ~table.requested[:, j]
-            if outside.any():
-                warnings.append(f'{int(outside.sum())} night(s) of the range are outside the requested OBS_WINDOW')
     return TargetPlan(key=part_key(target_key(req, t), part), req=req, j=j, settings=settings, part=part, epoch_h=epoch_h, feasible=feasible, placed=placed,
-                      intervals=intervals, issues=issues, warnings=warnings)
+                      intervals=intervals, issues=issues, warnings=warnings, in_range=in_range)
 
 
 def make_target_plans(req: RequestFile, j: int, table: NightTable, parts: list, use_moon: bool = True, oh_config: oh.OverheadConfig | None = None) -> list:
@@ -936,7 +999,7 @@ def schedule_rows(requests: list, plans: dict) -> list:
                 rows.append({'project': req.project_id or '', 'file': req.name, 'pi': req.lead_pi, 'target': t.label, 'part': p.part if p else 1, 'parts': len(parts),
                              'type': t.target_type, 'tile': t.tile_id, 'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5),
                              'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
-                             'obs_startdate': s.start.isoformat() if s and s.enabled else '', 'obs_enddate': s.end.isoformat() if s and s.enabled else '',
+                             'obs_startdate': time_text(s.start) if s and s.enabled else '', 'obs_enddate': time_text(s.end) if s and s.enabled else '',
                              'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
                              'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})

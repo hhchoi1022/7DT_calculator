@@ -10,7 +10,7 @@ Run with:  streamlit run schedule_app.py
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -165,7 +165,7 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         n_nights = len(table.dates)
         rng, ep, texts = np.zeros(n_nights, bool), np.zeros(n_nights, bool), [''] * n_nights
         for p in parts:
-            rng |= np.array([p.settings.start <= d <= p.settings.end for d in table.dates])
+            rng |= p.in_range
             ep |= p.placed
             for i in np.flatnonzero(p.placed):
                 texts[i] = f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d} ({p.epoch_h:.2f} h' + (f', part {p.part}' if len(parts) > 1 else '') + ')'
@@ -206,7 +206,7 @@ def projects_figure(requests: list, tables: dict, plans: dict, conflicts: list, 
         for p in plans.values():
             if p.req is not req or not p.settings.enabled:
                 continue
-            rng |= np.array([p.settings.start <= d <= p.settings.end for d in table.dates])
+            rng |= p.in_range
             ep |= p.placed
             for i in np.flatnonzero(p.placed):
                 names[i].append(f'{p.target.display} ({p.epoch_h:.1f} h)')
@@ -284,11 +284,14 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _as_date(value, fallback: date) -> date:
+def _as_datetime(value, fallback: datetime) -> datetime:
     if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NaT:
         return fallback
     try:
-        return pd.Timestamp(value).date()
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert('UTC').tz_localize(None)
+        return ts.to_pydatetime().replace(second=0, microsecond=0)
     except (ValueError, TypeError):
         return fallback
 
@@ -305,7 +308,7 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
             epochs = int(r['target_epoch']) if not pd.isna(r['target_epoch']) else old.epochs
         except (TypeError, ValueError):
             count, epochs = old.count, old.epochs
-        out[tkey].append(phase2.TargetSettings(start=_as_date(r['obs_startdate'], old.start), end=_as_date(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
+        out[tkey].append(phase2.TargetSettings(start=_as_datetime(r['obs_startdate'], old.start), end=_as_datetime(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
                                                enabled=bool(r['scheduled'])))
     return {k: v or previous[k] for k, v in out.items()}
 
@@ -322,8 +325,9 @@ def split_controls(requests: list) -> None:
     options = [(phase2.target_key(req, t), f'{req.key} {t.display}') for req in requests for t in req.targets]
     labels = dict(options)
     c1, c2, c3, c4 = st.columns([2, 1, 1, 3])
-    tkey = c1.selectbox('Target set to split', [k for k, _ in options], format_func=lambda k: labels[k] + (f' ({len(ss["sch_tsettings"][k])} parts)' if len(ss['sch_tsettings'][k]) > 1 else ''), key='sch_split_target')
+    tkey = c1.selectbox('Target set to split', [k for k, _ in options], format_func=lambda k: labels[k], key='sch_split_target')
     parts = ss['sch_tsettings'][tkey]
+    c1.caption(f'{len(parts)} part(s) at the moment.' if len(parts) > 1 else 'One part at the moment.')
     if c2.button('Add a part', key='sch_split_add', help='Adds a part with the same range as the last one; then edit its dates, count and epochs in the table.'):
         last = parts[-1]
         parts.append(phase2.TargetSettings(start=last.start, end=last.end, count=last.count, epochs=1, enabled=last.enabled))
@@ -345,15 +349,20 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
         ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
         remount_editor(requests)
-    c3.caption('Edit obs_startdate / obs_enddate (local nights, inclusive), count (frames per filter in one epoch) and target_epoch (number of epochs). '
-               'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is above the limit for that long.')
+    c3.caption('Edit obs_startdate / obs_enddate (UTC; a date alone means that whole local night, a time cuts exactly there), count (frames per filter in one epoch) and target_epoch. '
+               'The range you enter is the master (the requested OBS_WINDOW is shown for reference only; timed windows still fix the time of night). '
+               'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is up for that long.')
     split_controls(requests)
     column_config = {
         'key': None, 'RA (°)': st.column_config.NumberColumn(format='%.4f'), 'Dec (°)': st.column_config.NumberColumn(format='%.4f'),
         'Exptime (s)': st.column_config.NumberColumn(format='%g'),
         'dither_arcsec': st.column_config.NumberColumn(format='%.0f'), 'Requested (h)': st.column_config.NumberColumn(format='%.2f'),
-        'obs_startdate': st.column_config.DateColumn('obs_startdate', min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, format='YYYY-MM-DD', required=True),
-        'obs_enddate': st.column_config.DateColumn('obs_enddate', min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, format='YYYY-MM-DD', required=True),
+        'obs_startdate': st.column_config.DatetimeColumn('obs_startdate', min_value=datetime.combine(phase2.PROGRAM_START, datetime.min.time()),
+                                                         max_value=datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1), format='YYYY-MM-DD HH:mm', step=60, required=True,
+                                                         help='UTC. A date alone (00:00) means the whole local night of that date; add a time to start exactly there.'),
+        'obs_enddate': st.column_config.DatetimeColumn('obs_enddate', min_value=datetime.combine(phase2.PROGRAM_START, datetime.min.time()),
+                                                       max_value=datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1), format='YYYY-MM-DD HH:mm', step=60, required=True,
+                                                       help='UTC. A date alone (00:00) means the whole local night of that date (inclusive); add a time to stop exactly there.'),
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
         'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
@@ -411,8 +420,8 @@ def projects_table(requests: list, plans: dict) -> pd.DataFrame:
         on = [p for p in ps if p.settings.enabled]
         planned = sum(p.planned_h for p in on)
         bad = sum(1 for p in on if p.issues)
-        starts = [p.settings.start for p in on]
-        ends = [p.settings.end for p in on]
+        starts = [p.settings.start_night for p in on]
+        ends = [p.settings.end_night for p in on]
         rows.append({'Project': req.key, 'PI': req.lead_pi, 'Request type': req.observation, 'Mode': req.mode, 'Submode': req.submodes,
                      'Sky brightness': req.sky_background, 'Allocated (h)': req.allocated_hours, 'Requested (h)': round(req.total_h, 1), 'Planned (h)': round(planned, 1),
                      'Targets': len(req.targets), 'Scheduled': len(on), 'dither_arcsec': req.dither_arcsec,
@@ -470,8 +479,8 @@ def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.Seas
     items = [(by_key[k], tables[k], j) for k, j in chosen]
     st.plotly_chart(visibility_figure(items, grid, mode, show_moon, plans), width='stretch', key='sch_vis_fig', config={'displaylogo': False})
     st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h. '
-               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); red centre line = the planned obs_startdate to obs_enddate with the assumed epochs as diamonds; '
-               'thin grey line = the requested OBS_WINDOW.')
+               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); red centre line = the entered obs_startdate to obs_enddate with the assumed epochs as diamonds; '
+               'thin grey line = the OBS_WINDOW the PI requested (reference only).')
 
 
 def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) -> None:

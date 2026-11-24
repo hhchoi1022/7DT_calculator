@@ -145,14 +145,16 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   maximum altitude (`vis.nightly_max_altitude`), hours and intervals above 30 deg (`vis.hours_above`,
   `vis.intervals_above`), requested nights (date windows by night date, timed windows by overlap, UTC), Moon
   illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. The plan is
-  per target set (`phase2.TargetSettings`): obs_startdate / obs_enddate (local nights, inclusive), count
+  per target set (`phase2.TargetSettings`): obs_startdate / obs_enddate (UTC; a date alone means that whole
+  local night, both ends inclusive, a time cuts exactly there; the entered range is the master, the requested
+  OBS_WINDOW is reference only while timed windows still fix the time of night), count
   (frames per filter in one epoch) and target_epoch; a target set may be split into parts, each with its own
   values (`make_target_plans`, part keys `project|target#n`, frames compared with NUM_FRAMES as a whole);
   one epoch lasts `phase2.epoch_hours` (exposure x orders
   plus the overhead model of one visit, cached per mode / exptime / count). `make_target_plan` marks the
   nights of the range (Moon condition optional) on which the target's longest interval above the limit (inside
-  its timed window, if any) holds one epoch; blocking issues (not enough feasible nights, no coordinates)
-  versus warnings (frames differ from NUM_FRAMES, range outside the requested OBS_WINDOW). `place_epochs`
+  its timed window, if any, and inside the range's times) holds one epoch; blocking issues (not enough
+  feasible nights, no coordinates) versus warnings (frames differ from NUM_FRAMES). `place_epochs`
   assumes the automatic scheduler: most constrained targets first, each epoch in its own part of the range
   on the night with the least load. The conflict check packs each night pre-emptively, least slack first
   (`phase2.pack_night_slots`), and lists nights where an epoch gets more than a minute less than it needs.
@@ -202,6 +204,8 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   before the grid is drawn, so one click costs one script run.
 - Streamlit's fixed header swallows clicks in the top ~60 px of the viewport (matters for browser tests
   that scroll a grid to the top). Canvas grids need a hover before the click.
+- A selectbox whose option labels change (e.g. a count appended by `format_func`) is a new widget for
+  Streamlit even with a key, so its choice resets; keep labels fixed and show such counts elsewhere.
 - Streamlit magic: a bare expression statement in a page file that is not a plain call (e.g. a conditional
   expression `a() if x else b()`) is passed to `st.write()`; with a Plotly figure that draws an extra copy
   of the figure each time. Use if statements or assign the result.

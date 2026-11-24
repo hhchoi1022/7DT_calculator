@@ -144,7 +144,7 @@ def test_nights_and_plan():
     t0 = req.targets[0]
     assert phase2.epoch_hours(t0, 9) > 9 * 100 * 2 / 3600 and phase2.epoch_hours(t0, 9) == phase2.epoch_hours(t0, 9)
     s0 = phase2.default_target_settings(req, t0, table, 0)
-    assert s0.start == date(2026, 12, 1) and s0.end == date(2027, 8, 31) and s0.count * s0.epochs >= 9 and s0.enabled
+    assert s0.start_night == date(2026, 12, 1) and s0.end_night == date(2027, 8, 31) and s0.count * s0.epochs >= 9 and s0.enabled
     assert not phase2.default_target_settings(req, req.targets[2], table, 2).enabled          # no exposure time: not scheduled
     plan = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3), use_moon=False)
     assert plan.frames_planned == 9 and plan.n_placed == 3 and plan.planned_h == 3 * plan.epoch_h and plan.ok and plan.status == 'OK'
@@ -154,7 +154,15 @@ def test_nights_and_plan():
     big = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=900, epochs=1), use_moon=False)
     assert not big.ok and 'no night in the range' in big.status
     warn = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2027, 1, 5), count=4, epochs=1), use_moon=False)
-    assert warn.ok and 'frames planned' in warn.status and 'outside the requested OBS_WINDOW' in warn.status
+    assert warn.ok and 'frames planned' in warn.status and 'OBS_WINDOW' not in warn.status            # the entered range is the master
+    assert plan.in_range.sum() == 10 and plan.in_range[:10].all()                                       # date-only: whole local nights, both ends inclusive
+    from datetime import datetime
+    i = 3
+    cut = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=datetime(2026, 12, 4, 0, 0) + __import__('datetime').timedelta(days=grid.start_jd[i] - grid.start_jd[i]),
+                                                                       end=datetime(2026, 12, 5, 2, 0), count=1, epochs=1), use_moon=False)
+    assert cut.in_range.sum() in (1, 2) and all(b <= (phase2.Time(datetime(2026, 12, 5, 2, 0)).jd - grid.start_jd[k]) * 24 + 1e-6 for k in np.flatnonzero(cut.in_range) for _, b in cut.intervals[k])
+    assert phase2.as_datetime('2027-02-24') == datetime(2027, 2, 24) and phase2.as_datetime('2027-02-24T03:30') == datetime(2027, 2, 24, 3, 30)
+    assert phase2.time_text(datetime(2027, 2, 24)) == '2027-02-24' and phase2.time_text(datetime(2027, 2, 24, 3, 30)) == '2027-02-24T03:30'
     off = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3, enabled=False))
     assert off.n_placed == 0 and off.status == 'off' and off.planned_h == 0 or not off.settings.enabled
     plans = {'a': plan, 'b': phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3), use_moon=False)}
