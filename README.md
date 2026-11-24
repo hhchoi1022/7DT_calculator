@@ -19,7 +19,7 @@ without reading everything first. Read **Working rules** and **Gotchas** before 
 | 7DS tile matcher | `tiles_app.py` | `./run_tiles.sh` | Which 7DS survey tiles contain / overlap each target (optionally within a radius), interactive tile maps |
 | Observation request | `trigger_app.py` | `./run_trigger.sh` | Target or Survey (7DS tile) requests in a fixed format (table or uploaded file with column assignment), validated against the request rules, the current instrument and the project's allocated time, written to the request spreadsheet as one worksheet per project (`<period>_<Project ID>`); tile matcher dialog (circle / ellipse), visibility and total-time helper plots; an existing worksheet is loaded for editing when the project key matches |
 | Mode builder | `modebuilder_app.py` | `./run_modebuilder.sh` | Compose a new Spec / Color observation mode by clicking filters in the wheel grid of every unit, validate it, visualise it and download a `.specmode` / `.colormode` JSON file |
-| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects and lists every requested target set in one table (mode, total exposure = exptime x frames x orders, overhead, `dither_arcsec` per project, OBS_WINDOW); per project PI / request type / mode / sky background / allocation / requested time, the operator's `obsdate_window`, hours per night and night count; visibility of any chosen targets (several projects at once) over the programme period as curves (max altitude or observable hours) plus per-target strips (observable hours in greens, requested OBS_WINDOW as a red centre line, Moon in yellow); a per-project, per-night strip chart (greens = a target is up, red centre line = the planned window) with the nights on which the planned projects compete for the same time of night; the schedule is saved next to the request files |
+| Scheduling (operator) | `schedule_app.py` | `./run_schedule.sh` | Reads the Phase-2 request files of the open-time programme (one text file per proposal), matches them to the registered projects and lists every requested target set in one editable table: the request (mode, exptime, frames, total with overhead, `dither_arcsec` per project, OBS_WINDOW) plus the operator's `obs_startdate`, `obs_enddate`, `count` (frames per epoch) and `target_epoch`; a check table (hours per epoch with the mode's overhead, planned vs requested frames and hours, nights in the range on which the target is up long enough, status), an assumed automatic schedule (epochs placed load-balanced on feasible nights) and the nights on which assumed epochs compete for the same time of night; per project PI / request type / mode / sky background / allocation / planned time; visibility of any chosen targets (several projects at once) as curves (max altitude or observable hours) plus per-target strips (observable hours in greens, planned range as a red centre line with epoch diamonds, requested OBS_WINDOW as a thin grey line, Moon in yellow); a per-project, per-night strip chart; the schedule is saved next to the request files |
 
 Each page is a separate Streamlit process. Every `run_*.sh` script carries a default port that can be
 overridden with `PORT=...`; the ports in use are assigned by the operator and are not part of this
@@ -144,14 +144,20 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   overrides. Nights are the 274 local nights 2026-12-01 to 2027-08-31 on the season grid; per target: nightly
   maximum altitude (`vis.nightly_max_altitude`), hours and intervals above 30 deg (`vis.hours_above`,
   `vis.intervals_above`), requested nights (date windows by night date, timed windows by overlap, UTC), Moon
-  illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. A plan per
-  project = window, hours per night, optional night count (spread evenly), Moon condition on/off, enabled;
-  planned hours per night = min(hours, union of the targets' intervals). The conflict check packs each night
-  pre-emptively, least slack first (`phase2.pack_night_slots`), and lists nights where a project gets more
-  than a minute less than planned. The schedule is saved as `schedule.json` in the request folder.
-  Strip charts use `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn
-  as one Plotly heatmap with a discrete colour scale; windows (requested OBS_WINDOW per target, planned
-  obsdate_window per project) are a red line through the middle of the strip so they never hide the
+  illumination classes Dark <= 0.2 < Gray <= 0.8 < Bright from the proposal's sky background. The plan is
+  per target set (`phase2.TargetSettings`): obs_startdate / obs_enddate (local nights, inclusive), count
+  (frames per filter in one epoch) and target_epoch; one epoch lasts `phase2.epoch_hours` (exposure x orders
+  plus the overhead model of one visit, cached per mode / exptime / count). `make_target_plan` marks the
+  nights of the range (Moon condition optional) on which the target's longest interval above the limit (inside
+  its timed window, if any) holds one epoch; blocking issues (not enough feasible nights, no coordinates)
+  versus warnings (frames differ from NUM_FRAMES, range outside the requested OBS_WINDOW). `place_epochs`
+  assumes the automatic scheduler: most constrained targets first, each epoch in its own part of the range
+  on the night with the least load. The conflict check packs each night pre-emptively, least slack first
+  (`phase2.pack_night_slots`), and lists nights where an epoch gets more than a minute less than it needs.
+  The schedule is saved as `schedule.json` in the request folder (keys `project|target`). Strip charts use
+  `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
+  heatmap with a discrete colour scale; the planned range is a red line through the middle of the strip with
+  the assumed epochs as diamonds, the requested OBS_WINDOW a thin grey line below, so they never hide the
   observability colours. `dither_arcsec` comes from `data/projects.json` (per project; 0 when absent).
 
 ## Working rules (decisions already made with the telescope operator; keep them)
@@ -172,11 +178,12 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
-- Scheduling page: the combined target table comes first; projects table with single-row selection (tick
-  the box) plus a selectbox; the selected project's settings widgets are keyed by project so switching
-  projects keeps every project's values; the page reruns once after a settings change so the projects
-  table shows the new plan. The visibility section plots the chosen targets of the chosen projects in one
-  figure (no per-target figures, no nightly-plan figure).
+- Scheduling page: the editable plan table comes first (`st.data_editor` whose input frame is kept in
+  session state and only rebuilt on reset / load, so edits do not re-mount it; the request columns are
+  disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the check
+  table; projects table with single-row selection (tick the box) plus a selectbox. The visibility section
+  plots the chosen targets of the chosen projects in one figure (no per-target figures, no nightly-plan
+  figure).
 - New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
 
 ## Gotchas (learned the hard way)

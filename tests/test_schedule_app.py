@@ -141,26 +141,41 @@ def test_nights_and_plan():
     assert not alt['transit'][0, 1] and alt['max_alt'][0, 1] < alt['culmination'][1] and alt['at_hours'][0, 1] == 0   # NGC 253 transits before the night
     assert (alt['max_alt'] <= alt['culmination'][None, :] + 1e-6).all()
     assert abs(table.hours[0, 0] - np.nansum(table.ends[0, 0] - table.starts[0, 0])) < 1e-9
-    settings = phase2.default_settings(req, table)
-    assert settings.start == date(2026, 12, 1) and settings.enabled and settings.use_moon
-    plan = phase2.make_plan(req, table, phase2.PlanSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), hours_per_night=1.0, use_moon=False))
-    assert plan.nights == 10 and plan.planned_h[:10].max() <= 1.0 and plan.planned_h[10:].sum() == 0 and plan.planned_total <= 10
-    capped = phase2.make_plan(req, table, phase2.PlanSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), hours_per_night=1.0, use_moon=False, max_nights=3))
-    assert capped.nights == 3
-    off = phase2.make_plan(req, table, phase2.PlanSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), hours_per_night=1.0, enabled=False))
-    assert off.nights == 0 and off.status == 'off'
-    assert phase2.night_conflicts({'a': plan, 'b': plan}, list(grid.dates)) == []       # two 1 h jobs fit in the same hours above the limit
-    full = phase2.make_plan(req, table, phase2.PlanSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), hours_per_night=10.0, use_moon=False))
-    conflicts = phase2.night_conflicts({'a': full, 'b': full}, list(grid.dates))
-    assert len(conflicts) == 10 and all(c['date'] <= date(2026, 12, 10) and 'b' in c['short'] for c in conflicts)   # the whole availability twice does not
-    rows = phase2.schedule_rows([req], {req.key: plan})
-    assert len(rows) == 3 and rows[0]['obsdate_window_start'] == '2026-12-01' and rows[0]['hours_per_night'] == 1.0
+    t0 = req.targets[0]
+    assert phase2.epoch_hours(t0, 9) > 9 * 100 * 2 / 3600 and phase2.epoch_hours(t0, 9) == phase2.epoch_hours(t0, 9)
+    s0 = phase2.default_target_settings(req, t0, table, 0)
+    assert s0.start == date(2026, 12, 1) and s0.end == date(2027, 8, 31) and s0.count * s0.epochs >= 9 and s0.enabled
+    assert not phase2.default_target_settings(req, req.targets[2], table, 2).enabled          # no exposure time: not scheduled
+    plan = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3), use_moon=False)
+    assert plan.frames_planned == 9 and plan.n_placed == 3 and plan.planned_h == 3 * plan.epoch_h and plan.ok and plan.status == 'OK'
+    assert plan.placed[:10].sum() == 3 and not plan.placed[10:].any()
+    short = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 2), count=3, epochs=3), use_moon=False)
+    assert not short.ok and 'only 2 of 3 epochs' in short.status
+    big = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=900, epochs=1), use_moon=False)
+    assert not big.ok and 'no night in the range' in big.status
+    warn = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2027, 1, 5), count=4, epochs=1), use_moon=False)
+    assert warn.ok and 'frames planned' in warn.status and 'outside the requested OBS_WINDOW' in warn.status
+    off = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3, enabled=False))
+    assert off.n_placed == 0 and off.status == 'off' and off.planned_h == 0 or not off.settings.enabled
+    plans = {'a': plan, 'b': phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=3, epochs=3), use_moon=False)}
+    load = phase2.place_epochs(plans, 40)
+    assert (load > 0).sum() == 6 and plans['a'].n_placed == 3 and plans['b'].n_placed == 3        # balanced: no shared night
+    assert not set(np.flatnonzero(plans['a'].placed)) & set(np.flatnonzero(plans['b'].placed))
+    assert phase2.night_conflicts(plans, list(grid.dates)) == []
+    crowded = {f'x{k}': phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 1), count=60, epochs=1), use_moon=False) for k in range(3)}
+    phase2.place_epochs(crowded, 40)
+    conflicts = phase2.night_conflicts(crowded, list(grid.dates))
+    assert len(conflicts) == 1 and conflicts[0]['date'] == date(2026, 12, 1) and conflicts[0]['short']       # three long epochs on one night do not fit
+    rows = phase2.schedule_rows([req], {phase2.target_key(req, req.targets[0]): plan})
+    assert len(rows) == 3 and rows[0]['obs_startdate'] == '2026-12-01' and rows[0]['count'] == 3 and rows[0]['target_epoch'] == 3 and rows[1]['obs_startdate'] == ''
 
 
 def test_schedule_file_roundtrip(tmp_path):
-    settings = {'26001': phase2.PlanSettings(start=date(2027, 1, 2), end=date(2027, 3, 4), hours_per_night=1.5, use_moon=False, enabled=True, max_nights=4)}
+    settings = {'26001|A': phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 3, 4), count=40, epochs=5, enabled=True)}
     phase2.save_schedule(tmp_path, settings)
     assert phase2.load_schedule(tmp_path) == settings
+    (tmp_path / phase2.SCHEDULE_FILE).write_text('{"old": {"start": "2027-01-01", "end": "2027-02-01", "hours_per_night": 1}}')
+    assert phase2.load_schedule(tmp_path) == {}                                                 # an older layout is ignored
     (tmp_path / 'req.txt').write_text(SAMPLE)
     (tmp_path / phase2.MAPPING_FILE).write_text('{"req.txt": "26099"}')
     reqs = phase2.load_requests(tmp_path, {'26099': {'pi': 'Nobody', 'allocated_hours': 5, 'observation': 'Target', 'mode': 'Spec', 'sky_background': 'Dark', 'key': 'x'}})
@@ -174,6 +189,5 @@ def test_schedule_page_runs():
     at = AppTest.from_file(str(Path(__file__).resolve().parent.parent / 'schedule_app.py'), default_timeout=300).run()
     assert not at.exception
     assert at.title[0].value == '7DT Scheduling' and at.selectbox[0].value
-    assert [m.label for m in at.metric][:3] == ['Allocated', 'Requested exposure', 'Requested with overheads']
-    assert [h.value for h in at.subheader] == ['Requested targets', 'Projects', 'Visibility of the targets', 'All projects', 'Save and export']
+    assert [h.value for h in at.subheader] == ['Targets and plan', 'Projects', 'Visibility of the targets', 'All projects', 'Save and export']
     assert at.multiselect[0].label == 'Projects' and at.multiselect[1].label == 'Targets' and at.multiselect[1].value

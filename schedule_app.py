@@ -1,14 +1,15 @@
 """
 7DT Scheduling (operator page): every target requested in the Phase-2 files of the open-time programme in
-one table, the projects with their planned observing window and hours per night, visibility of any chosen
-targets over the programme period, and the nights on which the planned projects compete for the same time
-of night.
+one editable table (obs_startdate, obs_enddate, frames per epoch, number of epochs), the check that each
+target is up long enough inside its range for the entered plan, a load-balanced assumption of which nights
+the automatic scheduler would use, visibility of any chosen targets over the programme period, and the
+nights on which the assumed epochs compete for the same time of night.
 Run with:  streamlit run schedule_app.py
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -24,11 +25,13 @@ from ui_common import feedback_note, live_config, season_grid_for, site_key
 st.set_page_config(page_title='7DT Scheduling', page_icon='🗓️', layout='wide')
 
 MIN_ALT = 30.0
-PLAN_COLOR = 'rgba(123,50,148,0.9)'       # planned obsdate_window outline in the visibility figure
-WINDOW_COLOR = '#d62728'                  # windows: a red line through the middle of a strip
+WINDOW_COLOR = '#d62728'                  # planned range: a red line through the middle of a strip, epochs as dots
+REQUEST_COLOR = '#555555'                 # requested OBS_WINDOW: a thin grey line below the red one
 CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
+EDIT_COLUMNS = ['obs_startdate', 'obs_enddate', 'count', 'target_epoch', 'scheduled']
+RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
 # ------------------------------------------------------------------ cached data
@@ -68,12 +71,6 @@ def night_dates(table: phase2.NightTable) -> list:
     return [datetime.combine(d, datetime.min.time()) for d in table.dates]
 
 
-def plan_shape(settings: phase2.PlanSettings, yref: str = 'paper', y0=0, y1=1) -> dict:
-    return dict(type='rect', xref='x', yref=yref, x0=datetime.combine(settings.start, datetime.min.time()) - timedelta(hours=12),
-                x1=datetime.combine(settings.end, datetime.min.time()) + timedelta(hours=12), y0=y0, y1=y1, fillcolor='rgba(0,0,0,0)',
-                line=dict(color=PLAN_COLOR, width=2, dash='dot'), layer='above')
-
-
 def utc_text(grid: vis.SeasonGrid, i: int, hours: float) -> str:
     t = datetime(2000, 1, 1) + timedelta(days=grid.start_jd[i] - 2451544.5 + hours / 24.0)
     return t.strftime('%H:%M')
@@ -82,33 +79,6 @@ def utc_text(grid: vis.SeasonGrid, i: int, hours: float) -> str:
 def slot_text(table: phase2.NightTable, grid: vis.SeasonGrid, i: int, j: int) -> str:
     parts = [f'{utc_text(grid, i, s)}–{utc_text(grid, i, e)} UT' for s, e in zip(table.starts[i, j], table.ends[i, j]) if not np.isnan(s)]
     return ', '.join(parts) if parts else f'below {MIN_ALT:g}° all night'
-
-
-def category_legend(names: list, fig: go.Figure, row=None, col=None) -> None:
-    for name in names:
-        k = CAT_INDEX[name]
-        _, label, color = phase2.STRIP_CATEGORIES[k]
-        tr = go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip')
-        if row:                      # (an if statement, not a conditional expression: Streamlit's magic would st.write() the figure)
-            fig.add_trace(tr, row=row, col=col)
-        else:
-            fig.add_trace(tr)
-
-
-def heatmap(dates: list, labels: list, cats: np.ndarray, hover: list) -> go.Heatmap:
-    return go.Heatmap(x=dates, y=labels, z=cats, zmin=-0.5, zmax=len(phase2.STRIP_CATEGORIES) - 0.5, colorscale=CAT_SCALE, showscale=False,
-                      xgap=0, ygap=2, hovertext=hover, hoverinfo='text')
-
-
-def window_trace(dates: list, labels: list, masks: list, name: str) -> go.Scatter:
-    """One red line through the middle of every strip over the nights of its window (runs separated by gaps)."""
-    xs, ys = [], []
-    half = timedelta(hours=12)
-    for label, mask in zip(labels, masks):
-        for a, b in runs(np.asarray(mask, bool)):
-            xs += [dates[a] - half, dates[b] + half, None]
-            ys += [label, label, None]
-    return go.Scatter(x=xs, y=ys, mode='lines', line=dict(color=WINDOW_COLOR, width=4), name=name, hoverinfo='skip', connectgaps=False)
 
 
 def runs(mask: np.ndarray) -> list:
@@ -125,14 +95,52 @@ def runs(mask: np.ndarray) -> list:
     return out
 
 
+def category_legend(names: list, fig: go.Figure, row=None, col=None) -> None:
+    for name in names:
+        _, label, color = phase2.STRIP_CATEGORIES[CAT_INDEX[name]]
+        tr = go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip')
+        if row:                      # (an if statement, not a conditional expression: Streamlit's magic would st.write() the figure)
+            fig.add_trace(tr, row=row, col=col)
+        else:
+            fig.add_trace(tr)
+
+
+def heatmap(dates: list, labels: list, cats: np.ndarray, hover: list) -> go.Heatmap:
+    return go.Heatmap(x=dates, y=labels, z=cats, zmin=-0.5, zmax=len(phase2.STRIP_CATEGORIES) - 0.5, colorscale=CAT_SCALE, showscale=False,
+                      xgap=0, ygap=2, hovertext=hover, hoverinfo='text')
+
+
+def line_trace(dates: list, positions: list, masks: list, name: str, color: str, width: float) -> go.Scatter:
+    """A horizontal line at the row position (category index, fractional offsets allowed) over the nights of each mask (runs separated by gaps)."""
+    xs, ys = [], []
+    half = timedelta(hours=12)
+    for pos, mask in zip(positions, masks):
+        for a, b in runs(np.asarray(mask, bool)):
+            xs += [dates[a] - half, dates[b] + half, None]
+            ys += [pos, pos, None]
+    return go.Scatter(x=xs, y=ys, mode='lines', line=dict(color=color, width=width), name=name, hoverinfo='skip', connectgaps=False)
+
+
+def dot_trace(dates: list, positions: list, masks: list, name: str, hover: list | None = None) -> go.Scatter:
+    xs, ys, texts = [], [], []
+    for k, (pos, mask) in enumerate(zip(positions, masks)):
+        for i in np.flatnonzero(np.asarray(mask, bool)):
+            xs.append(dates[i])
+            ys.append(pos)
+            texts.append(hover[k][i] if hover else '')
+    return go.Scatter(x=xs, y=ys, mode='markers', marker=dict(color=WINDOW_COLOR, size=7, symbol='diamond', line=dict(color='white', width=1)), name=name,
+                      hovertext=texts, hoverinfo='text' if hover else 'skip')
+
+
 def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict) -> go.Figure:
     """
     items: [(req, table, j)] chosen targets. Top: nightly maximum altitude or observable hours of every target
-    (and the Moon illumination); bottom: one strip per target (observable hours in greens, the requested
-    OBS_WINDOW in blues, Moon-unsuitable nights in yellow); the planned window of each project dotted red.
+    (and the Moon illumination); bottom: one strip per target (observable hours in greens, Moon-unsuitable
+    nights in yellow), its planned range as a red centre line with the assumed epochs as dots, and the
+    requested OBS_WINDOW as a thin grey line below.
     """
     n = len(items)
-    strip_h = 22 * n + 30
+    strip_h = 26 * n + 30
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[320, strip_h])
     dates = night_dates(items[0][1]) if items else []
     for req, table, j in items:
@@ -145,135 +153,231 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
                                  '<br>observable %{customdata[0]:.2f} h, max alt %{customdata[1]:.1f}°<br>%{customdata[3]}<br>Moon %{customdata[2]:.0%}<extra></extra>'), row=1, col=1)
     if show_moon and items:
         table = items[0][1]
-        fig.add_trace(go.Scatter(x=dates, y=table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination', yaxis='y3',
+        fig.add_trace(go.Scatter(x=dates, y=table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination',
                                  hovertemplate='Moon %{y:.0%}<extra></extra>'), row=1, col=1)
         fig.data[-1].update(yaxis='y3')
-    labels, cats, hover, masks = [], [], [], []
+    labels, cats, hover, ranges, epochs, requested, epoch_hover = [], [], [], [], [], [], []
     for req, table, j in items:
         t = req.targets[j]
         label = f'{req.key} {t.display}'
+        plan = plans.get(phase2.target_key(req, t))
+        s = plan.settings if plan else None
         c = phase2.strip_categories(table.hours[:, j], table.moon_ok if show_moon else None)
         labels.append(label)
         cats.append(c)
-        masks.append(table.requested[:, j])
+        ranges.append(np.array([bool(s and s.enabled and s.start <= d <= s.end) for d in table.dates]))
+        epochs.append(plan.placed if plan and s.enabled else np.zeros(len(table.dates), bool))
+        requested.append(table.requested[:, j])
         hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested' if w else '') + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
                       for d, h, a, w, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], table.moon, table.moon_ok)])
+        epoch_hover.append([f'{label}: epoch assumed on {d:%Y-%m-%d} ({plan.epoch_h:.2f} h)' if plan else '' for d in table.dates])
     if items:
         fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
-        fig.add_trace(window_trace(dates, labels, masks, 'requested OBS_WINDOW'), row=2, col=1)
+        fig.add_trace(line_trace(dates, [k + 0.3 for k in range(n)], requested, 'requested OBS_WINDOW', REQUEST_COLOR, 1.5), row=2, col=1)
+        fig.add_trace(line_trace(dates, list(range(n)), ranges, 'planned obs_startdate to obs_enddate', WINDOW_COLOR, 4), row=2, col=1)
+        fig.add_trace(dot_trace(dates, list(range(n)), epochs, 'assumed epoch', epoch_hover), row=2, col=1)
         category_legend(['obs', 'good'] + (['moon'] if show_moon else []), fig, row=2, col=1)
-    shapes = []
-    seen = set()
-    for req, table, j in items:
-        plan = plans.get(req.key)
-        if plan is not None and plan.settings.enabled and req.key not in seen:
-            seen.add(req.key)
-            shapes.append(plan_shape(plan.settings, yref='paper', y0=0, y1=1))
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
-    shapes.append(dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash')))
-    if shapes:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=PLAN_COLOR, width=2, dash='dot'), name='planned obsdate_window', hoverinfo='skip'), row=1, col=1)
+    shapes = [dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash'))]
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=320 + strip_h + 90, margin=dict(l=10, r=10, t=10, b=10), shapes=shapes, hovermode='closest',
                       yaxis=dict(title='max altitude (°)' if mode == 'alt' else 'observable hours (h)', rangemode='tozero'),
                       yaxis3=dict(overlaying='y', side='right', range=[0, 1], tickformat='.0%', showgrid=False, title='Moon'),
-                      yaxis2=dict(autorange='reversed', tickfont=dict(size=10)), xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]),
+                      yaxis2=dict(autorange='reversed', tickfont=dict(size=10), type='category'), xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]),
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
     return fig
 
 
 def projects_figure(requests: list, tables: dict, plans: dict, conflicts: list, show_moon: bool) -> go.Figure:
-    """One strip per project: hours during which any of its targets is above the limit (greens), the planned obsdate_window (blues), conflicts in red."""
-    labels, cats, hover, masks = [], [], [], []
-    first = tables[requests[0].key]
-    dates = night_dates(first)
+    """One strip per project: hours during which any of its targets is above the limit (greens), the planned ranges of its targets (red line), assumed epochs (dots), conflicts in red."""
+    labels, cats, hover, ranges, epochs, epoch_hover = [], [], [], [], [], []
+    dates = night_dates(tables[requests[0].key])
     for req in requests:
-        table, plan = tables[req.key], plans[req.key]
-        s = plan.settings
-        window = np.array([s.enabled and s.start <= d <= s.end for d in table.dates], bool)
-        c = phase2.strip_categories(table.hours_any, table.moon_ok if (show_moon and s.use_moon) else None)
+        table = tables[req.key]
+        n = len(table.dates)
+        rng, ep, names = np.zeros(n, bool), np.zeros(n, bool), [[] for _ in range(n)]
+        for t in req.targets:
+            p = plans.get(phase2.target_key(req, t))
+            if p is None or not p.settings.enabled:
+                continue
+            rng |= np.array([p.settings.start <= d <= p.settings.end for d in table.dates])
+            ep |= p.placed
+            for i in np.flatnonzero(p.placed):
+                names[i].append(f'{t.display} ({p.epoch_h:.1f} h)')
+        c = phase2.strip_categories(table.hours_any, table.moon_ok if show_moon else None)
         label = f'{req.key} {req.lead_pi}'
         labels.append(label)
         cats.append(c)
-        masks.append(window)
-        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h with a target up' + (', in the planned window' if w else '') + (f', {p:.2f} h planned' if p > 0 else '') + f', Moon {m:.0%}'
-                      for d, h, w, p, m in zip(table.dates, table.hours_any, window, plan.planned_h, table.moon)])
+        ranges.append(rng)
+        epochs.append(ep)
+        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h with a target up' + (', in a planned range' if w else '') + f', Moon {m:.0%}'
+                      for d, h, w, m in zip(table.dates, table.hours_any, rng, table.moon)])
+        epoch_hover.append([f'{label} {d:%Y-%m-%d}: ' + ', '.join(nm) for d, nm in zip(table.dates, names)])
     conflict_row = np.zeros(len(dates), int)
     conflict_hover = [''] * len(dates)
     for c in conflicts:
         i = (c['date'] - phase2.PROGRAM_START).days
         if 0 <= i < len(dates):
             conflict_row[i] = CAT_INDEX['conflict']
-            conflict_hover[i] = f"{c['date']}: {', '.join(c['projects'])}; short " + ', '.join(f'{k} {v:.2f} h' for k, v in c['short'].items())
+            conflict_hover[i] = f"{c['date']}: " + ', '.join(c['targets']) + '<br>short: ' + ', '.join(f'{k} {v:.2f} h' for k, v in c['short'].items())
     labels.append('conflicts')
     cats.append(conflict_row)
     hover.append(conflict_hover)
-    masks.append(np.zeros(len(dates), bool))
     fig = go.Figure(heatmap(dates, labels, np.array(cats), hover))
-    fig.add_trace(window_trace(dates, labels, masks, 'planned obsdate_window'))
+    fig.add_trace(line_trace(dates, list(range(len(requests))), ranges, 'planned ranges of the targets', WINDOW_COLOR, 4))
+    fig.add_trace(dot_trace(dates, list(range(len(requests))), epochs, 'assumed epoch', epoch_hover))
     category_legend(['obs', 'good'] + (['moon'] if show_moon else []) + ['conflict'], fig)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
-    fig.update_layout(height=24 * len(labels) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
-                      yaxis=dict(autorange='reversed', tickfont=dict(size=11)), legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
+    fig.update_layout(height=26 * len(labels) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
+                      yaxis=dict(autorange='reversed', tickfont=dict(size=11), type='category'), legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
     return fig
 
 
-def night_figure(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, i: int) -> go.Figure:
-    """Time-of-night bars of every planned project on night i: light = a target above the limit (inside its timed window, if any), red = the planned hours as packed."""
+def night_figure(plans: dict, grid: vis.SeasonGrid, i: int) -> go.Figure:
+    """Time-of-night bars of every epoch assumed on night i: light = the target above the limit (inside its timed window, if any), red = the epoch as packed."""
     base = datetime(2000, 1, 1) + timedelta(days=grid.start_jd[i] - 2451544.5)
     night_len = (grid.end_jd[i] - grid.start_jd[i]) * 24.0
     fig = go.Figure()
-    jobs = [(req.key, float(plans[req.key].planned_h[i]), plans[req.key].intervals[i]) for req in requests if plans[req.key].planned_h[i] > 1e-9]
+    jobs = phase2.night_jobs(plans, i)
     got, slots = phase2.pack_night_slots(jobs) if jobs else ({}, {})
     rows = []
-    for req in requests:
-        plan = plans[req.key]
-        if plan.planned_h[i] <= 1e-9:
-            continue
-        label = f'{req.key} {req.lead_pi}'
-        rows.append(label)
-        table = tables[req.key]
-        for j, t in enumerate(req.targets):
-            for lo, hi in table.target_intervals(i, j):
-                fig.add_trace(go.Bar(y=[label], x=[(hi - lo) * 3600000], base=[base + timedelta(hours=lo)], orientation='h', marker_color='rgba(44,160,44,0.30)',
-                                     hovertext=f'{t.display}: {utc_text(grid, i, lo)}–{utc_text(grid, i, hi)} UT above {MIN_ALT:g}°', hoverinfo='text', showlegend=False))
-        for lo, hi in slots.get(req.key, []):
-            fig.add_trace(go.Bar(y=[label], x=[(hi - lo) * 3600000], base=[base + timedelta(hours=lo)], orientation='h', marker_color='rgba(214,39,40,0.85)', width=0.45,
-                                 hovertext=f'{req.key}: {utc_text(grid, i, lo)}–{utc_text(grid, i, hi)} UT planned', hoverinfo='text', showlegend=False))
-        demand, have = plan.planned_h[i], got.get(req.key, 0.0)
-        fig.add_annotation(x=base + timedelta(hours=night_len), y=label, xanchor='left', showarrow=False, font=dict(size=11, color='#d62728' if have < demand - 1 / 60 else '#2ca02c'),
-                           text=f'{demand:.2f} h planned' + ('' if have >= demand - 1 / 60 else f', only {have:.2f} h fit'))
+    for key, demand, intervals in jobs:
+        rows.append(key)
+        for lo, hi in intervals:
+            fig.add_trace(go.Bar(y=[key], x=[(hi - lo) * 3600000], base=[base + timedelta(hours=lo)], orientation='h', marker_color='rgba(44,160,44,0.30)',
+                                 hovertext=f'{key}: {utc_text(grid, i, lo)}–{utc_text(grid, i, hi)} UT above {MIN_ALT:g}°', hoverinfo='text', showlegend=False))
+        for lo, hi in slots.get(key, []):
+            fig.add_trace(go.Bar(y=[key], x=[(hi - lo) * 3600000], base=[base + timedelta(hours=lo)], orientation='h', marker_color='rgba(214,39,40,0.85)', width=0.45,
+                                 hovertext=f'{key}: {utc_text(grid, i, lo)}–{utc_text(grid, i, hi)} UT', hoverinfo='text', showlegend=False))
+        have = got.get(key, 0.0)
+        fig.add_annotation(x=base + timedelta(hours=night_len), y=key, xanchor='left', showarrow=False, font=dict(size=11, color='#d62728' if have < demand - 1 / 60 else '#2ca02c'),
+                           text=f'{demand:.2f} h epoch' + ('' if have >= demand - 1 / 60 else f', only {have:.2f} h fit'))
     if not rows:
-        fig.add_annotation(x=0.5, y=0.5, xref='paper', yref='paper', showarrow=False, text='No project is planned on this night.')
-    fig.update_layout(height=max(220, 34 * (len(rows) + 2)), margin=dict(l=10, r=130, t=10, b=10), barmode='overlay',
+        fig.add_annotation(x=0.5, y=0.5, xref='paper', yref='paper', showarrow=False, text='No epoch is assumed on this night.')
+    fig.update_layout(height=max(220, 30 * (len(rows) + 2)), margin=dict(l=10, r=130, t=10, b=10), barmode='overlay',
                       xaxis=dict(type='date', title='UTC', range=[base - timedelta(minutes=20), base + timedelta(hours=night_len + 3)], tickformat='%H:%M'),
-                      yaxis=dict(autorange='reversed'), showlegend=False)
+                      yaxis=dict(autorange='reversed', type='category'), showlegend=False)
     return fig
 
 
+# ------------------------------------------------------------------ the plan table
+def base_frame(requests: list, settings: dict) -> pd.DataFrame:
+    rows = []
+    for req in requests:
+        for t in req.targets:
+            k = phase2.target_key(req, t)
+            s = settings[k]
+            rows.append({'key': k, 'Project': req.key, 'PI': req.lead_pi, 'Target': t.display, 'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
+                         'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
+                         'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
+                         'OBS_WINDOW': t.window_text, 'Note': t.note,
+                         'obs_startdate': s.start, 'obs_enddate': s.end, 'count': int(s.count), 'target_epoch': int(s.epochs), 'scheduled': bool(s.enabled)})
+    return pd.DataFrame(rows)
+
+
+def _as_date(value, fallback: date) -> date:
+    if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NaT:
+        return fallback
+    try:
+        return pd.Timestamp(value).date()
+    except (ValueError, TypeError):
+        return fallback
+
+
+def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
+    out = {}
+    for _, r in df.iterrows():
+        k = r['key']
+        old = previous[k]
+        try:
+            count = int(r['count']) if not pd.isna(r['count']) else old.count
+            epochs = int(r['target_epoch']) if not pd.isna(r['target_epoch']) else old.epochs
+        except (TypeError, ValueError):
+            count, epochs = old.count, old.epochs
+        out[k] = phase2.TargetSettings(start=_as_date(r['obs_startdate'], old.start), end=_as_date(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
+                                       enabled=bool(r['scheduled']))
+    return out
+
+
+def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
+    """The editable table of every requested target set; returns (plans, use_moon)."""
+    ss = st.session_state
+    st.subheader('Targets and plan')
+    c1, c2, c3 = st.columns([1.3, 1, 3])
+    use_moon = c1.checkbox('Apply the Moon condition', value=True, key='sch_use_moon', help='Only nights whose Moon illumination suits the project\'s sky background count (Dark ≤ 0.2, Gray 0.2–0.8, Bright ≥ 0.8).')
+    if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
+        ss['sch_tsettings'] = {phase2.target_key(req, t): phase2.default_target_settings(req, t, tables[req.key], j, use_moon) for req in requests for j, t in enumerate(req.targets)}
+        ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
+        ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
+    c3.caption('Edit obs_startdate / obs_enddate (local nights, inclusive), count (frames per filter in one epoch) and target_epoch (number of epochs). '
+               'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is above the limit for that long.')
+    column_config = {
+        'key': None, 'RA (°)': st.column_config.NumberColumn(format='%.4f'), 'Dec (°)': st.column_config.NumberColumn(format='%.4f'),
+        'Exptime (s)': st.column_config.NumberColumn(format='%g'),
+        'dither_arcsec': st.column_config.NumberColumn(format='%.0f'), 'Requested (h)': st.column_config.NumberColumn(format='%.2f'),
+        'obs_startdate': st.column_config.DateColumn('obs_startdate', min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, format='YYYY-MM-DD', required=True),
+        'obs_enddate': st.column_config.DateColumn('obs_enddate', min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, format='YYYY-MM-DD', required=True),
+        'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
+        'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
+        'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
+    }
+    base = ss['sch_editor_base']
+    disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
+    edited = st.data_editor(base, key=f"sch_editor_{ss.get('sch_editor_version', 0)}", column_config=column_config, disabled=disabled, hide_index=True,
+                            width='stretch', height=min(60 + 36 * len(base), 560), column_order=[c for c in base.columns if c != 'key'])
+    ss['sch_tsettings'] = settings_from_frame(edited, ss['sch_tsettings'])
+    plans = {}
+    for req in requests:
+        for j, t in enumerate(req.targets):
+            k = phase2.target_key(req, t)
+            plans[k] = phase2.make_target_plan(req, j, tables[req.key], ss['sch_tsettings'][k], use_moon)
+    phase2.place_epochs(plans, phase2.PROGRAM_NIGHTS)
+    check_table(plans)
+    return plans, use_moon
+
+
+def check_table(plans: dict) -> None:
+    rows = []
+    for p in plans.values():
+        t, s = p.target, p.settings
+        rows.append({'Project': p.req.key, 'Target': t.display, 'Mode': t.mode_text, 'Exptime (s)': t.exptime, 'count × epochs': f'{s.count} × {s.epochs} = {p.frames_planned}',
+                     'Requested frames': t.nframes, 'Epoch (h)': round(p.epoch_h, 2), 'Planned (h)': round(p.planned_h, 2), 'Requested (h)': round(p.required_h, 2),
+                     'Feasible nights': p.n_feasible, 'Epochs placed': p.n_placed, 'Status': p.status, '_flag': 'off' if not s.enabled else ('error' if p.issues else ('warn' if p.warnings else ''))})
+    df = pd.DataFrame(rows)
+    for c in ('Epoch (h)', 'Planned (h)', 'Requested (h)'):
+        df[c] = df[c].astype(float)
+    n_err = int((df['_flag'] == 'error').sum())
+    n_warn = int((df['_flag'] == 'warn').sum())
+    n_on = int((df['_flag'] != 'off').sum())
+    msg = f'{n_on} of {len(df)} target sets scheduled; planned {sum(p.planned_h for p in plans.values() if p.settings.enabled):.1f} h in total.'
+    if n_err:
+        st.error(f'{n_err} target set(s) cannot be observed as entered (red). {msg}')
+    elif n_warn:
+        st.warning(f'Every scheduled target set fits; {n_warn} with a remark (yellow). {msg}')
+    else:
+        st.success(f'Every scheduled target set fits. {msg}')
+    style = df.drop(columns=['_flag']).style.apply(lambda col: [RED if f == 'error' else (YELLOW if f == 'warn' else '') for f in df['_flag']], axis=0)
+    st.dataframe(style, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 420),
+                 column_config={'Epoch (h)': st.column_config.NumberColumn(format='%.2f'), 'Planned (h)': st.column_config.NumberColumn(format='%.2f'),
+                                'Requested (h)': st.column_config.NumberColumn(format='%.2f'), 'Exptime (s)': st.column_config.NumberColumn(format='%g')})
+
+
 # ------------------------------------------------------------------ page sections
-def targets_section(requests: list) -> None:
-    st.subheader('Requested targets')
-    df = pd.DataFrame(phase2.target_rows(requests))
-    st.dataframe(df, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 520),
-                 column_config={'RA (°)': st.column_config.NumberColumn(format='%.5f'), 'Dec (°)': st.column_config.NumberColumn(format='%.5f'),
-                                'dither_arcsec': st.column_config.NumberColumn(format='%.0f')})
-    c1, c2 = st.columns([1, 4])
-    c1.download_button('Download table (CSV)', data=df.to_csv(index=False).encode(), file_name='7dt_phase2_targets.csv', mime='text/csv', key='sch_targets_csv')
-    c2.caption(f'{len(df)} target sets from {len(requests)} files; one row per set (a target split into several sets gives several rows). '
-               'Total exposure = exptime × frames × orders of the mode (specall: 2); with overhead = the overhead model for one visit. dither_arcsec from data/projects.json.')
-
-
 def projects_table(requests: list, plans: dict) -> pd.DataFrame:
     rows = []
     for req in requests:
-        p = plans[req.key]
-        s = p.settings
+        ps = [plans[phase2.target_key(req, t)] for t in req.targets]
+        on = [p for p in ps if p.settings.enabled]
+        planned = sum(p.planned_h for p in on)
+        bad = sum(1 for p in on if p.issues)
+        starts = [p.settings.start for p in on]
+        ends = [p.settings.end for p in on]
         rows.append({'Project': req.key, 'PI': req.lead_pi, 'Request type': req.observation, 'Mode': req.mode, 'Submode': req.submodes,
-                     'Sky brightness': req.sky_background, 'Allocated (h)': req.allocated_hours, 'Requested (h)': round(req.total_h, 1),
-                     'Targets': len(req.targets), 'dither_arcsec': req.dither_arcsec, 'Requested window': f'{req.requested_start} to {req.requested_end}' + (' (timed)' if req.timed else ''),
-                     'Planned start': s.start.isoformat() if s.enabled else '', 'Planned end': s.end.isoformat() if s.enabled else '',
-                     'h / night': s.hours_per_night if s.enabled else None, 'Nights': p.nights, 'Planned (h)': round(p.planned_total, 1), 'Status': p.status,
+                     'Sky brightness': req.sky_background, 'Allocated (h)': req.allocated_hours, 'Requested (h)': round(req.total_h, 1), 'Planned (h)': round(planned, 1),
+                     'Targets': len(req.targets), 'Scheduled': len(on), 'dither_arcsec': req.dither_arcsec,
+                     'Planned range': f'{min(starts)} to {max(ends)}' if on else '', 'Epochs': sum(p.n_placed for p in on),
+                     'Status': ('off' if not on else (f'{bad} target(s) do not fit' if bad else 'OK')) +
+                               (f'; over allocation by {planned - req.allocated_hours:.1f} h' if req.allocated_hours is not None and planned > req.allocated_hours + 1e-6 else ''),
                      'Issues': len(req.all_issues)})
     return pd.DataFrame(rows)
 
@@ -282,8 +386,7 @@ def select_project(requests: list, df: pd.DataFrame) -> phase2.RequestFile:
     ss = st.session_state
     keys = [r.key for r in requests]
     event = st.dataframe(df, hide_index=True, on_select='rerun', selection_mode='single-row', key='sch_table', width='stretch',
-                         column_config={'Allocated (h)': st.column_config.NumberColumn(format='%.1f'), 'h / night': st.column_config.NumberColumn(format='%.1f'),
-                                        'dither_arcsec': st.column_config.NumberColumn(format='%.0f')})
+                         column_config={'Allocated (h)': st.column_config.NumberColumn(format='%.1f'), 'dither_arcsec': st.column_config.NumberColumn(format='%.0f')})
     rows = list(getattr(getattr(event, 'selection', None), 'rows', []) or [])
     clicked = keys[rows[0]] if rows and rows[0] < len(keys) else None
     if clicked and clicked != ss.get('sch_last_click'):
@@ -292,47 +395,11 @@ def select_project(requests: list, df: pd.DataFrame) -> phase2.RequestFile:
     if ss.get('sch_project') not in keys:
         ss['sch_project'] = keys[0]
     choice = st.selectbox('Project', keys, format_func=lambda k: f'{k}: {next(r for r in requests if r.key == k).title[:90]}', key='sch_project')
-    return next(r for r in requests if r.key == choice)
-
-
-def settings_widgets(req: phase2.RequestFile, current: phase2.PlanSettings) -> phase2.PlanSettings:
-    k = req.key
-    c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.2, 1, 1, 1, 1])
-    start = c1.date_input('obsdate_window start', value=current.start, min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, key=f'sch_start_{k}')
-    end = c2.date_input('obsdate_window end', value=current.end, min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, key=f'sch_end_{k}')
-    hours = c3.number_input('Hours per night', value=float(current.hours_per_night), min_value=0.1, max_value=14.0, step=0.5, key=f'sch_hours_{k}',
-                            help='At most this many hours of the project per night (less when its targets are up for a shorter time).')
-    nights = c4.number_input('Nights (0 = all)', value=int(current.max_nights), min_value=0, max_value=phase2.PROGRAM_NIGHTS, step=1, key=f'sch_nights_{k}',
-                             help='Use only this many of the usable nights, spread evenly over the window. 0: every usable night.')
-    moon = c5.checkbox('Moon condition', value=current.use_moon, key=f'sch_moon_{k}', help=f'Only nights whose Moon illumination suits "{req.sky_background}".')
-    enabled = c6.checkbox('Scheduled', value=current.enabled, key=f'sch_on_{k}', help='Off: the project is left out of the plan and of the conflict check.')
-    if end < start:
-        st.error('The window ends before it starts.')
-        end = start
-    return phase2.PlanSettings(start=start, end=end, hours_per_night=float(hours), use_moon=bool(moon), enabled=bool(enabled), max_nights=int(nights))
-
-
-def project_section(req: phase2.RequestFile, table: phase2.NightTable, plans: dict) -> None:
-    ss = st.session_state
-    st.markdown(f'**{req.key}: {req.title}**')
-    st.caption(f'PI {req.pi} ({req.emails}) · {req.observation} · {req.mode} {req.submodes} · sky background {req.sky_background} · dither {req.dither_arcsec:g}" · file {req.name}')
+    req = next(r for r in requests if r.key == choice)
+    st.caption(f'{req.key}: {req.title} · PI {req.pi} ({req.emails}) · {req.observation} · {req.mode} {req.submodes} · sky background {req.sky_background} · dither {req.dither_arcsec:g}" · file {req.name}')
     for issue in req.all_issues:
         st.warning(issue)
-    current = ss['sch_settings'][req.key]
-    new = settings_widgets(req, current)
-    if new != current:
-        ss['sch_settings'][req.key] = new
-        plans[req.key] = phase2.make_plan(req, table, new)
-    plan = plans[req.key]
-    m = st.columns(6)
-    m[0].metric('Allocated', f'{req.allocated_hours:.1f} h' if req.allocated_hours is not None else 'n/a')
-    m[1].metric('Requested exposure', f'{req.exposure_h:.1f} h')
-    m[2].metric('Requested with overheads', f'{req.total_h:.1f} h')
-    m[3].metric('Planned', f'{plan.planned_total:.1f} h')
-    m[4].metric('Nights used', f'{plan.nights}')
-    m[5].metric('Status', plan.status)
-    if req.allocated_hours is not None and req.total_h > req.allocated_hours + 1e-6:
-        st.error(f'The request ({req.total_h:.1f} h with overheads) exceeds the allocation ({req.allocated_hours:.1f} h).')
+    return req
 
 
 def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, selected: phase2.RequestFile) -> None:
@@ -361,8 +428,9 @@ def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.Seas
         return
     items = [(by_key[k], tables[k], j) for k, j in chosen]
     st.plotly_chart(visibility_figure(items, grid, mode, show_moon, plans), width='stretch', key='sch_vis_fig', config={'displaylogo': False})
-    st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; dotted purple: the planned obsdate_window of the chosen projects. '
-               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); the red line through the middle marks its requested OBS_WINDOW.')
+    st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h. '
+               'Strips: greens = observable hours of the target (light > 0 h, dark ≥ 3 h); red centre line = the planned obs_startdate to obs_enddate with the assumed epochs as diamonds; '
+               'thin grey line = the requested OBS_WINDOW.')
 
 
 def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) -> None:
@@ -371,22 +439,24 @@ def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.Se
     show_moon = st.checkbox('Mark nights that fail the Moon condition', value=False, key='sch_all_moon')
     st.plotly_chart(projects_figure(requests, tables, plans, conflicts, show_moon), width='stretch', key='sch_projects_fig', config={'displaylogo': False})
     st.caption('Per project and night: greens = hours during which at least one of its targets is above the limit (light > 0 h, dark ≥ 3 h); '
-               'the red line through the middle marks the planned obsdate_window.')
+               'red centre line = the planned ranges of its targets, diamonds = nights on which an epoch is assumed (automatic scheduling: the most constrained targets first, '
+               'each epoch in its own part of the range on the night with the least load).')
     if conflicts:
-        st.error(f'{len(conflicts)} night(s) on which the planned projects compete for the same time of night (least-slack packing, one project at a time).')
-        rows = [{'Night (local)': c['date'].isoformat(), 'Projects': ', '.join(c['projects']), 'Planned (h)': round(c['demand_h'], 2),
+        st.error(f'{len(conflicts)} night(s) on which the assumed epochs compete for the same time of night (least-slack packing, one target at a time).')
+        rows = [{'Night (local)': c['date'].isoformat(), 'Targets': ', '.join(c['targets']), 'Epochs (h)': round(c['demand_h'], 2),
                  'Fits (h)': round(c['scheduled_h'], 2), 'Short': ', '.join(f'{k} {v:.2f} h' for k, v in c['short'].items())} for c in conflicts]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch', height=min(60 + 36 * len(rows), 330))
     else:
-        st.success('No night on which the planned projects compete for the same time of night.')
-    busy = sum(plans[r.key].planned_h for r in requests)
-    nights = (busy > 0).sum()
-    st.caption(f'Planned nights: {int(nights)} of {len(grid.dates)}; planned hours in total: {busy.sum():.1f} h.')
-    default = conflicts[0]['date'] if conflicts else next((d for d, b in zip(grid.dates, busy) if b > 0), phase2.PROGRAM_START)
+        st.success('No night on which the assumed epochs compete for the same time of night.')
+    load = np.zeros(len(grid.dates))
+    for p in plans.values():
+        load[p.placed] += p.epoch_h
+    st.caption(f'Nights with an epoch: {int((load > 0).sum())} of {len(grid.dates)}; busiest night {grid.dates[int(load.argmax())]} with {load.max():.1f} h.')
+    default = conflicts[0]['date'] if conflicts else grid.dates[int(load.argmax())]
     night = st.date_input('Night to inspect (local date of the evening)', value=default, min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, key='sch_night')
     i = (night - phase2.PROGRAM_START).days
-    st.caption('Light bars: the project\'s targets above the altitude limit (inside their timed windows, if any). Red: the planned hours, packed one project at a time, least slack first.')
-    st.plotly_chart(night_figure(requests, tables, plans, grid, i), width='stretch', key='sch_night_fig', config={'displaylogo': False})
+    st.caption('Light bars: the target above the altitude limit (inside its timed window, if any). Red: the epoch, packed one target at a time, least slack first.')
+    st.plotly_chart(night_figure(plans, grid, i), width='stretch', key='sch_night_fig', config={'displaylogo': False})
 
 
 def export_section(requests: list, plans: dict, folder: Path) -> None:
@@ -394,30 +464,30 @@ def export_section(requests: list, plans: dict, folder: Path) -> None:
     st.subheader('Save and export')
     c1, c2, c3, c4 = st.columns(4)
     saved = phase2.load_schedule(folder)
-    changed = {k: v for k, v in ss['sch_settings'].items() if saved.get(k) != v}
+    changed = {k: v for k, v in ss['sch_tsettings'].items() if saved.get(k) != v}
     if c1.button('Save schedule', type='primary', key='sch_save', help=f'Writes {folder / phase2.SCHEDULE_FILE}'):
-        path = phase2.save_schedule(folder, ss['sch_settings'])
+        path = phase2.save_schedule(folder, ss['sch_tsettings'])
         st.caption(f'Saved to {path}')
         changed = {}
     elif changed:
-        c1.caption(f'{len(changed)} project(s) changed since the last save.')
+        c1.caption(f'{len(changed)} target set(s) changed since the last save.')
     rows = phase2.schedule_rows(requests, plans)
-    c2.download_button('Download obsdate_window table (CSV)', data=pd.DataFrame(rows).to_csv(index=False).encode(), file_name='7dt_schedule_targets.csv', mime='text/csv', key='sch_csv')
-    payload = {k: v.as_dict() for k, v in ss['sch_settings'].items()}
+    c2.download_button('Download plan table (CSV)', data=pd.DataFrame(rows).to_csv(index=False).encode(), file_name='7dt_schedule_targets.csv', mime='text/csv', key='sch_csv')
+    payload = {k: v.as_dict() for k, v in ss['sch_tsettings'].items()}
     c3.download_button('Download schedule (JSON)', data=json.dumps(payload, indent=2).encode(), file_name='7dt_schedule.json', mime='application/json', key='sch_json')
     upload = c4.file_uploader('Load a schedule JSON', type=['json'], key='sch_upload', label_visibility='collapsed')
     if upload is not None and ss.get('sch_uploaded') != upload.file_id:
         try:
             raw = json.loads(upload.getvalue().decode())
-            loaded = {str(k): phase2.PlanSettings.from_dict(v) for k, v in raw.items() if isinstance(v, dict) and not str(k).startswith('_')}
+            loaded = {str(k): phase2.TargetSettings.from_dict(v) for k, v in raw.items() if isinstance(v, dict) and not str(k).startswith('_')}
         except (ValueError, KeyError) as exc:
             st.error(f'Not a schedule file: {exc}')
         else:
             for k, v in loaded.items():
-                if k in ss['sch_settings']:
-                    ss['sch_settings'][k] = v
-                    for suffix in ('start', 'end', 'hours', 'nights', 'moon', 'on'):
-                        ss.pop(f'sch_{suffix}_{k}', None)
+                if k in ss['sch_tsettings']:
+                    ss['sch_tsettings'][k] = v
+            ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
+            ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
             ss['sch_uploaded'] = upload.file_id
             st.rerun()
 
@@ -443,22 +513,18 @@ def main():
         tables = night_tables(str(folder), signature, projects_sig, key, sun_alt)
     grid = data['grid']
     ss = st.session_state
-    if ss.get('sch_signature') != (signature, projects_sig) or 'sch_settings' not in ss:
+    if ss.get('sch_signature') != (signature, projects_sig) or 'sch_tsettings' not in ss:
         saved = phase2.load_schedule(folder)
-        ss['sch_settings'] = {req.key: saved.get(req.key) or phase2.default_settings(req, tables[req.key]) for req in requests}
+        ss['sch_tsettings'] = {phase2.target_key(req, t): saved.get(phase2.target_key(req, t)) or phase2.default_target_settings(req, t, tables[req.key], j)
+                               for req in requests for j, t in enumerate(req.targets)}
+        ss['sch_editor_base'] = base_frame(requests, ss['sch_tsettings'])
+        ss['sch_editor_version'] = ss.get('sch_editor_version', 0) + 1
         ss['sch_signature'] = (signature, projects_sig)
-    plans = {req.key: phase2.make_plan(req, tables[req.key], ss['sch_settings'][req.key]) for req in requests}
     st.caption(f'{len(requests)} request files in {folder} · programme {phase2.PROGRAM_START} to {phase2.PROGRAM_END} · altitude limit {MIN_ALT:g}° · '
                f'dates are local nights (evening date); times UTC.')
-
-    targets_section(requests)
+    plans, _ = plan_section(requests, tables)
     st.subheader('Projects')
-    st.caption('Tick a row or pick the project below to set its obsdate_window and hours per night.')
     req = select_project(requests, projects_table(requests, plans))
-    project_section(req, tables[req.key], plans)
-    if ss.get('sch_table_version') != repr([(k, v.as_dict()) for k, v in ss['sch_settings'].items()]):       # the table above was drawn with the old settings
-        ss['sch_table_version'] = repr([(k, v.as_dict()) for k, v in ss['sch_settings'].items()])
-        st.rerun()
     visibility_section(requests, tables, plans, grid, req)
     all_projects_section(requests, tables, plans, grid)
     export_section(requests, plans, folder)
