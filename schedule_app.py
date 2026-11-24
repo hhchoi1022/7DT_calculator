@@ -31,7 +31,8 @@ REQUEST_COLOR = '#555555'                 # requested OBS_WINDOW: a thin grey li
 CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
-EDIT_COLUMNS = ['obs_startdate', 'obs_enddate', 'count', 'target_epoch', 'scheduled']
+EDIT_COLUMNS = ['obs_startdate', 'obs_enddate', 'count', 'target_epoch', 'cadence', 'scheduled']
+DATE_PATTERN = r'^\s*\d{4}-\d{2}-\d{2}([ T]\d{1,2}:\d{2})?\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
@@ -280,18 +281,17 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
                              'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
                              'OBS_WINDOW': t.window_text, 'Note': t.note,
-                             'obs_startdate': s.start, 'obs_enddate': s.end, 'count': int(s.count), 'target_epoch': int(s.epochs), 'scheduled': bool(s.enabled)})
+                             'obs_startdate': phase2.time_text(s.start).replace('T', ' '), 'obs_enddate': phase2.time_text(s.end).replace('T', ' '),
+                             'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled)})
     return pd.DataFrame(rows)
 
 
 def _as_datetime(value, fallback: datetime) -> datetime:
+    """Typed 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (UTC); anything else keeps the previous value."""
     if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NaT:
         return fallback
     try:
-        ts = pd.Timestamp(value)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert('UTC').tz_localize(None)
-        return ts.to_pydatetime().replace(second=0, microsecond=0)
+        return phase2.as_datetime(value)
     except (ValueError, TypeError):
         return fallback
 
@@ -306,10 +306,11 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
         try:
             count = int(r['count']) if not pd.isna(r['count']) else old.count
             epochs = int(r['target_epoch']) if not pd.isna(r['target_epoch']) else old.epochs
+            cadence = int(r['cadence']) if not pd.isna(r['cadence']) else old.cadence
         except (TypeError, ValueError):
-            count, epochs = old.count, old.epochs
+            count, epochs, cadence = old.count, old.epochs, old.cadence
         out[tkey].append(phase2.TargetSettings(start=_as_datetime(r['obs_startdate'], old.start), end=_as_datetime(r['obs_enddate'], old.end), count=max(count, 1), epochs=max(epochs, 1),
-                                               enabled=bool(r['scheduled'])))
+                                               enabled=bool(r['scheduled']), cadence=max(cadence, 0)))
     return {k: v or previous[k] for k, v in out.items()}
 
 
@@ -349,7 +350,8 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
         ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
         remount_editor(requests)
-    c3.caption('Edit obs_startdate / obs_enddate (UTC; a date alone means that whole local night, a time cuts exactly there), count (frames per filter in one epoch) and target_epoch. '
+    c3.caption('Edit obs_startdate / obs_enddate (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there), count (frames per filter in one epoch), '
+               'target_epoch and cadence (days between epochs, 0 = free). '
                'The range you enter is the master (the requested OBS_WINDOW is shown for reference only; timed windows still fix the time of night). '
                'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is up for that long.')
     split_controls(requests)
@@ -357,14 +359,13 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'key': None, 'RA (°)': st.column_config.NumberColumn(format='%.4f'), 'Dec (°)': st.column_config.NumberColumn(format='%.4f'),
         'Exptime (s)': st.column_config.NumberColumn(format='%g'),
         'dither_arcsec': st.column_config.NumberColumn(format='%.0f'), 'Requested (h)': st.column_config.NumberColumn(format='%.2f'),
-        'obs_startdate': st.column_config.DatetimeColumn('obs_startdate', min_value=datetime.combine(phase2.PROGRAM_START, datetime.min.time()),
-                                                         max_value=datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1), format='YYYY-MM-DD HH:mm', step=60, required=True,
-                                                         help='UTC. A date alone (00:00) means the whole local night of that date; add a time to start exactly there.'),
-        'obs_enddate': st.column_config.DatetimeColumn('obs_enddate', min_value=datetime.combine(phase2.PROGRAM_START, datetime.min.time()),
-                                                       max_value=datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1), format='YYYY-MM-DD HH:mm', step=60, required=True,
-                                                       help='UTC. A date alone (00:00) means the whole local night of that date (inclusive); add a time to stop exactly there.'),
+        'obs_startdate': st.column_config.TextColumn('obs_startdate', validate=DATE_PATTERN, required=True, width='medium',
+                                                     help='UTC, typed as YYYY-MM-DD (the whole local night of that date) or YYYY-MM-DD HH:MM (start exactly there, e.g. 2027-03-05 00:30).'),
+        'obs_enddate': st.column_config.TextColumn('obs_enddate', validate=DATE_PATTERN, required=True, width='medium',
+                                                   help='UTC, typed as YYYY-MM-DD (that whole local night, inclusive) or YYYY-MM-DD HH:MM (stop exactly there).'),
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
+        'cadence': st.column_config.NumberColumn('cadence (d)', min_value=0, max_value=365, step=1, required=True, help='Days between consecutive epochs; 0 = no constraint. Taken from "cadence=7d" in the NOTE when present.'),
         'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
     }
     base = ss['sch_editor_base']
@@ -390,7 +391,7 @@ def check_table(plans: dict) -> None:
     for p in plans.values():
         t, s = p.target, p.settings
         rows.append({'Project': p.req.key, 'Target': t.display, 'Part': f'{p.part}/{n_parts[p.target_key]}' if n_parts[p.target_key] > 1 else '', 'Mode': t.mode_text,
-                     'Exptime (s)': t.exptime, 'count × epochs': f'{s.count} × {s.epochs} = {p.frames_planned}',
+                     'Exptime (s)': t.exptime, 'count × epochs': f'{s.count} × {s.epochs} = {p.frames_planned}', 'Cadence (d)': s.cadence or None,
                      'Requested frames': t.nframes, 'Epoch (h)': round(p.epoch_h, 2), 'Planned (h)': round(p.planned_h, 2), 'Requested (h)': round(p.required_h, 2),
                      'Feasible nights': p.n_feasible, 'Epochs placed': p.n_placed, 'Status': p.status, '_flag': 'off' if not s.enabled else ('error' if p.issues else ('warn' if p.warnings else ''))})
     df = pd.DataFrame(rows)

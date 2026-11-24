@@ -667,6 +667,7 @@ class TargetSettings:
     count: int                     # frames per filter in one epoch (visit)
     epochs: int                    # number of epochs (target_epoch)
     enabled: bool = True
+    cadence: int = 0               # days between consecutive epochs (0: no constraint)
 
     def __post_init__(self):
         self.start = as_datetime(self.start)
@@ -681,12 +682,13 @@ class TargetSettings:
         return self.end.date()
 
     def as_dict(self) -> dict:
-        return {'obs_startdate': time_text(self.start), 'obs_enddate': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs), 'enabled': bool(self.enabled)}
+        return {'obs_startdate': time_text(self.start), 'obs_enddate': time_text(self.end), 'count': int(self.count), 'target_epoch': int(self.epochs),
+                'cadence': int(self.cadence), 'enabled': bool(self.enabled)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
         return cls(start=as_datetime(d['obs_startdate']), end=as_datetime(d['obs_enddate']), count=int(d.get('count', 1)),
-                   epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)))
+                   epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)), cadence=int(d.get('cadence', 0) or 0))
 
     def bounds_jd(self, grid: vis.SeasonGrid) -> tuple[float, float]:
         """The range as UTC Julian dates: midnight values expand to the evening / morning twilight of that local night."""
@@ -733,7 +735,10 @@ def default_target_settings(req: RequestFile, t: RequestTarget, table: NightTabl
             if epoch_hours(t, count) <= best:
                 break
     enabled = req.observation != 'ToO' and t.has_coordinates and t.exptime is not None and t.nframes is not None
-    return TargetSettings(start=datetime.combine(start, datetime.min.time()), end=datetime.combine(end, datetime.min.time()), count=max(count, 1), epochs=max(epochs, 1), enabled=enabled)
+    m = re.search(r'cadence\s*[=:]?\s*(\d+)\s*(?:d\b|days?)', t.note, re.I)
+    cadence = int(m.group(1)) if m else 0
+    return TargetSettings(start=datetime.combine(start, datetime.min.time()), end=datetime.combine(end, datetime.min.time()), count=max(count, 1), epochs=max(epochs, 1),
+                          enabled=enabled, cadence=cadence)
 
 
 @dataclass
@@ -877,17 +882,56 @@ def place_epochs(plans: dict, n_nights: int) -> np.ndarray:
     order = sorted(plans.values(), key=lambda p: (p.n_feasible, -p.epoch_h))
     for p in order:
         p.placed[:] = False
+        p.issues = [i for i in p.issues if 'cadence' not in i]
         if not p.settings.enabled or p.epoch_h <= 0 or p.settings.epochs < 1:
             continue
         idx = np.flatnonzero(p.feasible)
         if idx.size == 0:
             continue
-        chunks = np.array_split(idx, min(p.settings.epochs, idx.size))
-        for chunk in chunks:
-            best = min(chunk, key=lambda i: (round(load[i], 3), abs(i - chunk[len(chunk) // 2])))
-            p.placed[best] = True
-            load[best] += p.epoch_h
+        if p.settings.cadence > 0:
+            chosen = _place_with_cadence(idx, p.settings.epochs, p.settings.cadence, load)
+            if len(chosen) < p.settings.epochs:
+                p.issues.append(f'only {len(chosen)} of {p.settings.epochs} epochs fit with a cadence of {p.settings.cadence} d')
+        else:
+            chosen = [min(chunk, key=lambda i: (round(load[i], 3), abs(i - chunk[len(chunk) // 2]))) for chunk in np.array_split(idx, min(p.settings.epochs, idx.size))]
+        for i in chosen:
+            p.placed[i] = True
+            load[i] += p.epoch_h
     return load
+
+
+def _place_with_cadence(idx: np.ndarray, epochs: int, cadence: int, load: np.ndarray) -> list:
+    """
+    Epoch nights among the feasible nights `idx` (night indices) about `cadence` days apart: the first
+    epoch on one of the first feasible nights (the start that fits the most epochs, then the least load),
+    each next one on the feasible night nearest to previous + cadence, never closer than the cadence,
+    within a tolerance of a third of the cadence; otherwise the next feasible night after that.
+    """
+    feasible = set(int(i) for i in idx)
+    tol = max(1, cadence // 3)
+
+    def chain(start: int) -> list:
+        out, prev = [start], start
+        while len(out) < epochs:
+            target = prev + cadence
+            cands = [i for i in range(target, target + tol + 1) if i in feasible]
+            if not cands:
+                later = [i for i in feasible if i > target + tol]
+                if not later:
+                    break
+                cands = [min(later)]
+            nxt = min(cands, key=lambda i: (round(load[i], 3), i))
+            out.append(nxt)
+            prev = nxt
+        return out
+
+    best = None
+    for start in [int(i) for i in idx[:min(len(idx), max(cadence, 1))]]:
+        c = chain(start)
+        score = (-len(c), round(sum(load[i] for i in c), 3), c[0])
+        if best is None or score < best[0]:
+            best = (score, c)
+    return best[1] if best else []
 
 
 MIN_ALT_TEXT = 'the altitude limit'
@@ -1000,7 +1044,7 @@ def schedule_rows(requests: list, plans: dict) -> list:
                              'type': t.target_type, 'tile': t.tile_id, 'ra': None if t.ra is None else round(t.ra, 5), 'dec': None if t.dec is None else round(t.dec, 5),
                              'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
                              'obs_startdate': time_text(s.start) if s and s.enabled else '', 'obs_enddate': time_text(s.end) if s and s.enabled else '',
-                             'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None,
+                             'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None, 'cadence': s.cadence if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
                              'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '', 'requested_windows': t.window_text, 'note': t.note})
     return rows

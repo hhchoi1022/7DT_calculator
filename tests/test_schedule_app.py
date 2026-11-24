@@ -176,6 +176,18 @@ def test_nights_and_plan():
     assert len(conflicts) == 1 and conflicts[0]['date'] == date(2026, 12, 1) and conflicts[0]['short']       # three long epochs on one night do not fit
     rows = phase2.schedule_rows([req], {plan.key: plan})
     assert len(rows) == 3 and rows[0]['obs_startdate'] == '2026-12-01' and rows[0]['count'] == 3 and rows[0]['target_epoch'] == 3 and rows[1]['obs_startdate'] == ''
+    # cadence: epochs a fixed number of days apart, a too short range reports the shortfall
+    cad = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2027, 1, 5), count=1, epochs=4, cadence=7), use_moon=False)
+    phase2.place_epochs({cad.key: cad}, 40)
+    nights = np.flatnonzero(cad.placed)
+    assert cad.n_placed == 4 and (np.diff(nights) >= 7).all() and (np.diff(nights) <= 9).all() and cad.ok
+    tight = phase2.make_target_plan(req, 0, table, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 10), count=1, epochs=4, cadence=7), use_moon=False)
+    phase2.place_epochs({tight.key: tight}, 40)
+    assert tight.n_placed == 2 and 'cadence of 7 d' in tight.status and not tight.ok
+    noted = phase2.parse_request(SAMPLE.replace('NOTE: first line', 'NOTE: cadence=7d. target_count=36.'))
+    phase2.compute_times(noted)
+    assert phase2.default_target_settings(noted, noted.targets[0], table, 0).cadence == 7 and phase2.default_target_settings(req, req.targets[0], table, 0).cadence == 0
+    assert phase2.TargetSettings.from_dict(phase2.TargetSettings(start=date(2027, 1, 1), end=date(2027, 2, 1), count=1, epochs=2, cadence=5).as_dict()).cadence == 5
     # a target set split into two parts: frames compared as a whole, one plan per part
     parts = [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2), phase2.TargetSettings(start=date(2026, 12, 20), end=date(2026, 12, 31), count=3, epochs=1)]
     split = phase2.make_target_plans(req, 0, table, parts, use_moon=False)

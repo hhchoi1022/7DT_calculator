@@ -148,7 +148,8 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   per target set (`phase2.TargetSettings`): obs_startdate / obs_enddate (UTC; a date alone means that whole
   local night, both ends inclusive, a time cuts exactly there; the entered range is the master, the requested
   OBS_WINDOW is reference only while timed windows still fix the time of night), count
-  (frames per filter in one epoch) and target_epoch; a target set may be split into parts, each with its own
+  (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free; the default
+  is read from 'cadence=7d' in the NOTE); a target set may be split into parts, each with its own
   values (`make_target_plans`, part keys `project|target#n`, frames compared with NUM_FRAMES as a whole);
   one epoch lasts `phase2.epoch_hours` (exposure x orders
   plus the overhead model of one visit, cached per mode / exptime / count). `make_target_plan` marks the
@@ -156,7 +157,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   its timed window, if any, and inside the range's times) holds one epoch; blocking issues (not enough
   feasible nights, no coordinates) versus warnings (frames differ from NUM_FRAMES). `place_epochs`
   assumes the automatic scheduler: most constrained targets first, each epoch in its own part of the range
-  on the night with the least load. The conflict check packs each night pre-emptively, least slack first
+  on the night with the least load; with a cadence the epochs are chained that many days apart
+  (`_place_with_cadence`, nearest feasible night within a third of the cadence, else the next one) and a
+  chain shorter than target_epoch is a blocking issue. The conflict check packs each night pre-emptively, least slack first
   (`phase2.pack_night_slots`), and lists nights where an epoch gets more than a minute less than it needs.
   The schedule is saved as `schedule.json` in the request folder (keys `project|target`, a list when split). Strip charts use
   `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
@@ -183,9 +186,11 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
 - Scheduling page: the editable plan table comes first (`st.data_editor` whose input frame is kept in
-  session state and only rebuilt on reset / load, so edits do not re-mount it; the request columns are
-  disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the check
-  table; projects table with single-row selection (tick the box) plus a selectbox. The visibility section
+  session state and only rebuilt on reset / load / split, so edits do not re-mount it; the request columns
+  are disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the
+  check table; obs_startdate / obs_enddate are text cells (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, regex
+  validated) because the browser's datetime picker follows the viewer's locale (12-hour clocks cannot
+  enter 00); projects table with single-row selection (tick the box) plus a selectbox. The visibility section
   plots the chosen targets of the chosen projects in one figure (no per-target figures, no nightly-plan
   figure).
 - New features go into the separate pages and `sevendt_calc/`; there is no combined page any more.
