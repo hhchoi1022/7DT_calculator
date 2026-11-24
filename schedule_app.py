@@ -302,7 +302,9 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
             k = phase2.target_key(req, t)
             parts = settings[k]
             for n, s in enumerate(parts, start=1):
+                exposure_h = (t.exptime or 0.0) * s.count * s.epochs * max(t.n_orders, 1) / 3600.0
                 rows.append({'key': phase2.part_key(k, n), 'Project': req.key, 'PI': req.lead_pi, 'Target': t.display, 'Part': f'{n}/{len(parts)}' if len(parts) > 1 else '',
+                             'Total exptime (h)': round(exposure_h, 2), 'With overhead (h)': round(phase2.epoch_hours(t, s.count) * s.epochs, 2),
                              'Type': t.target_type, 'Mode': t.mode_text, 'Sky': req.sky_background,
                              'RA (°)': None if t.ra is None else round(t.ra, 4), 'Dec (°)': None if t.dec is None else round(t.dec, 4),
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
@@ -392,15 +394,28 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
         'cadence': st.column_config.NumberColumn('cadence (d)', min_value=0, max_value=365, step=1, required=True, help='Days between consecutive epochs; 0 = no constraint. Taken from "cadence=7d" in the NOTE when present.'),
+        'Total exptime (h)': st.column_config.NumberColumn('Total exptime (h)', format='%.2f', help='exptime × count × target_epoch × orders of the mode (specall: 2), updated as you edit'),
+        'With overhead (h)': st.column_config.NumberColumn('With overhead (h)', format='%.2f', help='target_epoch × (one epoch of count frames with the overhead model), updated as you edit'),
         'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
     }
-    base = ss['sch_editor_base']
+    editor_key = f"sch_editor_{ss.get('sch_editor_version', 0)}"
+    state = ss.get(editor_key)
+    previous = ss.get('sch_editor_base')
+    if state is not None and previous is not None:            # apply the edits already made before the table is rebuilt, so the live totals do not lag one run behind
+        pending = previous.copy()
+        for ridx, changes in (dict(state.get('edited_rows') or {})).items():
+            for col, val in dict(changes).items():
+                if col in pending.columns and 0 <= int(ridx) < len(pending):
+                    pending.iat[int(ridx), pending.columns.get_loc(col)] = val
+        ss['sch_tsettings'] = settings_from_frame(pending, ss['sch_tsettings'])
+    base = base_frame(requests, ss['sch_tsettings'])       # values follow the latest edits (live totals); a keyed fixed-row editor keeps its identity across value changes
+    ss['sch_editor_base'] = base
     disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
-    first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS
+    first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS + ['Total exptime (h)', 'With overhead (h)']
     order = first + [c for c in base.columns if c not in first and c != 'key']
     st.markdown('**Plan table** (one row per requested target set) — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, scheduled) '
-                'and press Enter; the other columns repeat the request and cannot be edited.')
-    edited = st.data_editor(base, key=f"sch_editor_{ss.get('sch_editor_version', 0)}", column_config=column_config, disabled=disabled, hide_index=True,
+                'and press Enter; Total exptime = exptime × count × target_epoch × orders and With overhead follow your edits; the other columns repeat the request and cannot be edited.')
+    edited = st.data_editor(base, key=editor_key, column_config=column_config, disabled=disabled, hide_index=True,
                             width='stretch', height=min(60 + 36 * len(base), 560), column_order=order)
     ss['sch_tsettings'] = settings_from_frame(edited, ss['sch_tsettings'])
     plans = {}

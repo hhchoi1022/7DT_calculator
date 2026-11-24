@@ -187,9 +187,11 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   entry (marked with a cross) to remove it, template load and file upload, download in the exact TCSpy
   layout. Filters not installed in the unit are errors, unequal sequence lengths are a warning.
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`).
-- Scheduling page: the editable plan table comes first (`st.data_editor` whose input frame is kept in
-  session state and only rebuilt on reset / load / split, so edits do not re-mount it; the request columns
-  are disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the
+- Scheduling page: the editable plan table comes first (`st.data_editor` with a key and fixed rows: in
+  Streamlit 1.64 such an editor keeps its identity across pure value changes, so the input frame is rebuilt
+  every run with live totals (Total exptime, With overhead) without losing edits or scroll; the key is
+  bumped only on reset / load / split, which must discard the widget's edits; the request columns are
+  disabled, the plan columns editable, the hidden `key` column identifies the row), followed by the
   list of rows that do not fit and the per-project summary; obs_starttime / obs_endtime are text cells (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`, regex
   validated) because the browser's datetime picker follows the viewer's locale (12-hour clocks cannot
   enter 00); projects table with single-row selection (tick the box) plus a selectbox. The visibility section
