@@ -4,6 +4,6 @@
     "/lyman/data1/7dt/configuration"
   ],
   "config_overlay": "",
-  "google_service_account_key": "",
+  "google_service_account_key": "/lyman/data1/7dt/credential/googlesheet/targetdb-423908-ee7bb8c14ff3.json",
   "phase2_requests_dir": "Opentime/2612"
 }
