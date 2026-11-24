@@ -84,7 +84,8 @@ ui_common.py             shared Streamlit pieces: live_config(), target table wi
                          night/moon widgets, obsmode_selector() with the cached mode figure, spectrum upload helpers
 *_app.py                 one Streamlit page each (see table above); run_*.sh start them
 data/                    settings.json (configuration folder, sheet key, request folder), trigger.json (request page), depth model JSON, overhead.json, public_modes.json, final_tiles.txt, transmission/, templates/, samples
-Opentime/<period>/       Phase-2 request files (*.txt), optional mapping.json (file -> Project ID), the saved schedule.json and backup/ (previous versions); git-ignored (PI e-mails)
+Opentime/<period>/       symlink to the Phase-2 folder on the shared mount (/lyman/data1/7dt/opentime/<period>: request files *.txt, optional mapping.json, the saved schedule.json and backup/); git-ignored (PI e-mails)
+docs/deploy_schedule_viewer.md   how the public server (7ds.snu.ac.kr) runs the Schedule viewer behind its HTTPS proxy
 data/cache/              generated (mode figures); git-ignored
 scripts/fetch_templates.py   rebuilds data/templates from public sources (Pickles, Kinney-Calzetti, Nugent, QSO)
 tests/                   test_core.py (models) + one AppTest file per page
@@ -199,7 +200,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
 - Streamlit widget keys are prefixed per page (`vis_`, `etc_`, `oh_`, `tile_`, `mb_`, `tr_`, `sch_`, `pl_`).
 - The schedule viewer never writes anything and shows a PI only their own programme; the other programmes
   are reduced to per-night "another programme has an epoch" marks (no names, no hours). It reads the
-  schedule the operator saved (`schedule.json`), so unsaved edits are invisible to PIs.
+  schedule the operator saved (`schedule.json`), so unsaved edits are invisible to PIs. The operator page
+  runs on lyman (internal network only); the viewer runs on the public server behind HTTPS and reads the
+  same folder over the shared mount (`docs/deploy_schedule_viewer.md`).
 - Scheduling page: the editable plan table comes first (`st.data_editor` with a key and fixed rows: in
   Streamlit 1.64 such an editor keeps its identity across pure value changes, so the input frame is rebuilt
   every run with live totals (Total exptime, With overhead) without losing edits or scroll; the key is
