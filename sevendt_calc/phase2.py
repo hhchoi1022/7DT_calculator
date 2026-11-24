@@ -641,7 +641,7 @@ def as_datetime(value) -> datetime:
         return value.replace(tzinfo=None) if value.tzinfo is not None else value
     if isinstance(value, date):
         return datetime.combine(value, datetime.min.time())
-    text = str(value).strip().replace('T', ' ')
+    text = re.sub(r'\s+', ' ', str(value).strip().replace('T', ' '))
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
         try:
             return datetime.strptime(text, fmt)

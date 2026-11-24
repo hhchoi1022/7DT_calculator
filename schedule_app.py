@@ -32,7 +32,7 @@ CAT_INDEX = {name: k for k, (name, _, _) in enumerate(phase2.STRIP_CATEGORIES)}
 CAT_SCALE = [[k / len(phase2.STRIP_CATEGORIES), c] for k, (_, _, c) in enumerate(phase2.STRIP_CATEGORIES) for _ in (0, 1)]
 CAT_SCALE = [[(k // 2 + (k % 2)) / len(phase2.STRIP_CATEGORIES), c] for k, (_, c) in enumerate(CAT_SCALE)]
 EDIT_COLUMNS = ['obs_startdate', 'obs_enddate', 'count', 'target_epoch', 'cadence', 'scheduled']
-DATE_PATTERN = r'^\s*\d{4}-\d{2}-\d{2}([ T]\d{1,2}:\d{2})?\s*$'
+DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
 
@@ -370,8 +370,12 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     }
     base = ss['sch_editor_base']
     disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
+    first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS
+    order = first + [c for c in base.columns if c not in first and c != 'key']
+    st.markdown('**Plan table** — type into the cells with the pencil icon (obs_startdate, obs_enddate, count, target_epoch, cadence, scheduled) and press Enter; '
+                'the other columns repeat the request and cannot be edited. The check table further down is read-only.')
     edited = st.data_editor(base, key=f"sch_editor_{ss.get('sch_editor_version', 0)}", column_config=column_config, disabled=disabled, hide_index=True,
-                            width='stretch', height=min(60 + 36 * len(base), 560), column_order=[c for c in base.columns if c != 'key'])
+                            width='stretch', height=min(60 + 36 * len(base), 560), column_order=order)
     ss['sch_tsettings'] = settings_from_frame(edited, ss['sch_tsettings'])
     plans = {}
     for req in requests:
@@ -407,8 +411,10 @@ def check_table(plans: dict) -> None:
         st.warning(f'Every scheduled row fits; {n_warn} with a remark (yellow). {msg}')
     else:
         st.success(f'Every scheduled row fits. {msg}')
+    st.markdown('**Check table** (read-only): what the entries above mean per row.')
     style = df.drop(columns=['_flag']).style.apply(lambda col: [RED if f == 'error' else (YELLOW if f == 'warn' else '') for f in df['_flag']], axis=0)
     st.dataframe(style, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 420),
+                 column_order=['Project', 'Target', 'Part', 'Status', 'count × epochs', 'Cadence (d)', 'Epoch (h)', 'Planned (h)', 'Requested frames', 'Requested (h)', 'Feasible nights', 'Epochs placed', 'Mode', 'Exptime (s)'],
                  column_config={'Epoch (h)': st.column_config.NumberColumn(format='%.2f'), 'Planned (h)': st.column_config.NumberColumn(format='%.2f'),
                                 'Requested (h)': st.column_config.NumberColumn(format='%.2f'), 'Exptime (s)': st.column_config.NumberColumn(format='%g')})
 
