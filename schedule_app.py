@@ -15,11 +15,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from schedule_plots import (MIN_ALT, WINDOW_COLOR, load_requests_cached, night_figure, night_tables, program_data, projects_figure, projects_signature,
                             projects_table, visibility_figure, warm_program_data)
-from sevendt_calc import phase2, sheets, trigger
+from sevendt_calc import phase2, sheets, simulate, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, site_key
 
@@ -312,6 +313,51 @@ def observation_list_section(requests: list, plans: dict, folder: Path) -> None:
     st.caption(f'Service account: {sheets.service_account_email(key_path)} (needs editor access to the spreadsheet).')
 
 
+@st.cache_resource(show_spinner=False)
+def fixed_programmes_cached(key: tuple, sun_alt: float, signature: tuple) -> list:
+    return simulate.load_fixed_programmes(program_data(key, sun_alt)['grid'], live_config())
+
+
+def simulation_section(plans: dict, grid: vis.SeasonGrid, key: tuple, sun_alt: float) -> None:
+    """Monte-Carlo night-by-night scheduling of the current plan: fixed programmes first, random weather, many runs."""
+    ss = st.session_state
+    st.subheader('Simulated scheduling')
+    fixed_path = trigger.PROJECTS_JSON.parent / 'fixed_programmes.json'
+    fixed_sig = (str(fixed_path), fixed_path.stat().st_mtime_ns) if fixed_path.is_file() else (str(fixed_path), 0)
+    fixed = fixed_programmes_cached(key, sun_alt, fixed_sig)
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
+    runs = int(c1.number_input('Runs', min_value=10, max_value=1000, value=200, step=10, key='sch_sim_runs'))
+    bad = float(c2.number_input('Bad-weather fraction', min_value=0.0, max_value=0.9, value=0.10, step=0.05, key='sch_sim_bad'))
+    seed = int(c3.number_input('Seed', min_value=0, max_value=10000, value=1, step=1, key='sch_sim_seed'))
+    c4.caption('Every clear night: ' + ('; '.join(f'{f.name}: {len(f.tile_ids)} tiles around {f.tile_ids[0]}, {f.epoch_h * 60:.0f} min per tile' + (f', every {f.cadence_days} d' if f.cadence_days else ', every night') for f in fixed) if fixed else 'no fixed programmes (data/fixed_programmes.json)')
+                + ' are placed first; then the scheduled parts, most urgent first (feasible nights ahead per remaining epoch), each in the earliest free slot while the target is up.')
+    if not st.button('Run the simulation', key='sch_sim_run') and 'sch_sim_result' not in ss:
+        return
+    if st.session_state.get('sch_sim_run'):
+        with st.spinner(f'{runs} runs...'):
+            result = simulate.simulate(plans, grid, fixed, runs=runs, bad_weather=bad, seed=seed)
+        ss['sch_sim_result'] = (result, simulate.summary_rows(result, plans))
+    result, rows = ss['sch_sim_result']
+    df = pd.DataFrame(rows)
+    n_low = int((df['p_complete'] < 0.9).sum())
+    st.caption(f'{result.runs} runs, {(1 - result.clear.mean()):.0%} of nights lost to weather. '
+               + ' · '.join(f'{name}: all tiles visited on {done[result.clear].mean():.0%} of the clear nights' if not next(f for f in fixed if f.name == name).cadence_days
+                            else f'{name}: {done.sum(axis=1).mean():.1f} visits per run' for name, done in result.fixed_done.items()))
+    if n_low:
+        st.warning(f'{n_low} part(s) finish all epochs in fewer than 90 % of the runs (p_complete): widen their range, move them, or reduce the epochs.')
+    style = df.style.apply(lambda col: ['background-color: #ffb3b3' if v < 0.5 else ('background-color: #fff3b0' if v < 0.9 else '') for v in df['p_complete']], axis=0)
+    st.dataframe(style, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 420))
+    st.download_button('Download simulation summary (CSV)', data=df.to_csv(index=False).encode(), file_name='7dt_simulation_summary.csv', mime='text/csv', key='sch_sim_csv')
+    dates = [datetime.combine(d, datetime.min.time()) for d in result.dates]
+    labels = [k.replace('#1', '') if k.endswith('#1') and plans[k].part == 1 and len(phase2.plans_of(plans, plans[k].req, plans[k].j)) == 1 else k for k in result.keys]
+    fig = go.Figure(go.Heatmap(x=dates, y=labels, z=result.prob, zmin=0, zmax=1, colorscale='Reds', colorbar=dict(title='P(epoch)'),
+                               hovertemplate='%{y} %{x|%Y-%m-%d}: %{z:.2f}<extra></extra>'))
+    x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
+    fig.update_layout(height=16 * len(labels) + 120, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]), yaxis=dict(type='category', autorange='reversed', tickfont=dict(size=9)))
+    st.plotly_chart(fig, width='stretch', key='sch_sim_fig', config={'displaylogo': False})
+    st.caption('Probability that the part gets an epoch on that night over the runs. Darker = more likely; an empty row = never scheduled (nothing fits in its range, or always beaten by others).')
+
+
 def export_section(requests: list, plans: dict, folder: Path) -> None:
     ss = st.session_state
     st.subheader('Save and export')
@@ -383,6 +429,7 @@ def main():
     req = select_project(requests, projects_table(requests, plans, list(grid.dates)))
     visibility_section(requests, tables, plans, grid, req)
     all_projects_section(requests, tables, plans, grid)
+    simulation_section(plans, grid, key, sun_alt)
     export_section(requests, plans, folder)
     observation_list_section(requests, plans, folder)
 

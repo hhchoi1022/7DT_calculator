@@ -75,6 +75,8 @@ sevendt_calc/            core package, no Streamlit imports
   trigger.py             observation requests: spreadsheet columns, upload parsing + column aliases, validation, row formatting
   phase2.py              Phase-2 request files: parser, project matching by PI name (or mapping.json), exposure / overhead time per target,
                          per-night tables on the season grid, the operator's plan (window, hours per night) and the night-packing conflict check
+  simulate.py            Monte-Carlo night-by-night scheduling of the plan: fixed programmes (data/fixed_programmes.json) first, random weather,
+                         most urgent part first into the earliest free slot; per-night epoch probabilities, completion chance, typical dates
   sheets.py              Google Sheets read / append / replace (service account; key from settings.json, GOOGLE_APPLICATION_CREDENTIALS or TCSpy's googleSheet.config)
   components/tile_picker/index.html   browser-side tile map (Plotly.js, plain HTML + JS, no build step): clicks toggle tiles locally,
                          only the selection is sent back (Streamlit component protocol by hand); wrapper ui_common.tile_picker()
@@ -175,6 +177,12 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   `data/trigger.json`), which the page writes to a worksheet of the request spreadsheet with
   `sheets.replace_rows` (service-account key as for the request page) or offers as CSV. Strip charts use
   `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
+  `simulate.simulate` is the Monte-Carlo scheduler behind "Simulated scheduling": each run draws the weather,
+  places the fixed programmes of `data/fixed_programmes.json` (IMS every clear night, TVF every 14 d; n tiles
+  around a centre tile, one visit each) and then the parts with remaining epochs, most urgent first
+  (feasible nights ahead / remaining epochs / cadence, with random jitter), each in the earliest free slot
+  while the target is up; results are the per-night epoch probability, p_complete and date percentiles.
+  Strip charts use `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
   heatmap with a discrete colour scale with the assumed epochs as diamonds on the rows (category labels as y:
   numbers would add rows '0', '1', ...). The visibility figure has two panels: curves with epoch diamonds,
   and one strip per chosen target (lines for the entered range and the OBS_WINDOW are shapes with

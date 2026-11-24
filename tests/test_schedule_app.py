@@ -234,6 +234,42 @@ def test_nights_and_plan():
     assert len(phase2.export_rows([req], d)) == 2                                               # rows with scheduled off are left out
 
 
+def test_simulation():
+    from sevendt_calc import simulate
+    grid = vis.season_grid(date(2026, 12, 1), n_nights=30)
+    moon = vis.moon_illumination_nights(grid)
+    req = phase2.parse_request(SAMPLE)
+    phase2.compute_times(req)
+    table = phase2.night_table(req, grid, moon)
+    plans = {}
+    for j in range(2):
+        for p in phase2.make_target_plans(req, j, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 30), count=3, epochs=4, cadence=5)], use_moon=False):
+            plans[p.key] = p
+    phase2.place_epochs(plans, 30)
+    ims = simulate.fixed_programme('IMS', 'T02665', 7, grid, cadence_days=0)
+    tvf = simulate.fixed_programme('TVF', 'T00174', 7, grid, cadence_days=14)
+    assert len(ims.tile_ids) == 7 and ims.tile_ids[0] == 'T02665' and 0.1 < ims.epoch_h < 0.3 and ims.starts.shape == (30, 7, 4)
+    res = simulate.simulate(plans, grid, [ims, tvf], runs=20, bad_weather=0.0, seed=3)
+    assert res.prob.shape == (2, 30) and res.clear.all() and res.runs == 20
+    k = res.keys.index(plans[phase2.part_key(phase2.target_key(req, req.targets[0]), 1)].key)
+    assert res.completed[k] == 1.0 and res.epochs_done[k] == 4                       # NGC 253 is up every December night: 4 epochs 5 d apart
+    nights = np.flatnonzero(res.prob[k] > 0)
+    assert nights.size >= 4 and res.first_night[:, k].min() >= 0 and res.last_night[:, k].max() <= 29
+    assert res.fixed_done['IMS'].mean() > 0.9 and 1 <= res.fixed_done['TVF'].sum(axis=1).mean() <= 3
+    rainy = simulate.simulate(plans, grid, [ims], runs=20, bad_weather=0.5, seed=3)
+    assert 0.3 < rainy.clear.mean() < 0.7 and rainy.epochs_done[k] <= res.epochs_done[k]
+    rows = simulate.summary_rows(res, plans)
+    assert rows[0]['epochs'] == 4 and rows[0]['p_complete'] == 1.0 and rows[0]['first_50'] and rows[0]['last_90'] >= rows[0]['last_10']
+    fixed = simulate.load_fixed_programmes(grid)
+    assert [f.name for f in fixed] == ['IMS', 'TVF'] and fixed[1].cadence_days == 14
+    # a part that never fits (one night, too long an epoch) stays at zero
+    never = {}
+    for p in phase2.make_target_plans(req, 0, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 1), count=900, epochs=1)], use_moon=False):
+        never[p.key] = p
+    res0 = simulate.simulate(never, grid, [], runs=5, bad_weather=0.0)
+    assert res0.prob.sum() == 0 and res0.completed[0] == 0.0
+
+
 def test_schedule_file_roundtrip(tmp_path):
     settings = {'26001|A': [phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 3, 4), count=40, epochs=5, enabled=True)],
                 '26001|B': [phase2.TargetSettings(start=date(2027, 1, 2), end=date(2027, 2, 1), count=10, epochs=2), phase2.TargetSettings(start=date(2027, 3, 2), end=date(2027, 4, 1), count=5, epochs=4)]}
@@ -261,5 +297,5 @@ def test_schedule_page_runs():
     at = AppTest.from_file(str(Path(__file__).resolve().parent.parent / 'schedule_app.py'), default_timeout=300).run()
     assert not at.exception
     assert at.title[0].value == '7DT Scheduling' and at.selectbox[0].value
-    assert [h.value for h in at.subheader] == ['Targets and plan', 'Project summary', 'Visibility of the targets', 'All projects', 'Save and export', 'Export the observation list']
+    assert [h.value for h in at.subheader] == ['Targets and plan', 'Project summary', 'Visibility of the targets', 'All projects', 'Simulated scheduling', 'Save and export', 'Export the observation list']
     assert at.multiselect[0].label == 'Projects' and at.multiselect[1].label == 'Targets' and at.multiselect[1].value
