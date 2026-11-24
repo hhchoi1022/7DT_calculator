@@ -128,20 +128,17 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
     """
     items: [(req, table, j)] chosen targets. Top: nightly maximum altitude or observable hours of every target,
     the assumed epochs as diamonds on the curves, the Moon illumination, the entered obs_starttime ..
-    obs_endtime as a dotted red outline. Bottom: ONE strip for all chosen targets together (greens: some
-    target observable / >= 3 h or at transit, yellow: Moon unsuitable for the first project), the assumed
-    epochs as diamonds, the entered range as a red centre line and the requested OBS_WINDOW as a thin blue
-    line above it.
+    obs_endtime as a dotted red outline. Bottom: one strip per chosen target (greens: observable / >= 3 h or
+    at transit, yellow: Moon unsuitable for its project), its assumed epochs as diamonds, its entered range
+    as a red centre line and its requested OBS_WINDOW as a thin blue line above it.
     """
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[330, 80])
+    strip_h = 26 * len(items) + 30
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[330, strip_h])
     if not items:
         return fig
     first_table = items[0][1]
     dates = night_dates(first_table)
     n_nights = len(dates)
-    window = np.zeros(n_nights, bool)
-    light = np.zeros(n_nights, bool)
-    dark = np.zeros(n_nights, bool)
     planned = np.zeros(n_nights, bool)
     epochs = np.zeros(n_nights, bool)
     epoch_names = [[] for _ in range(n_nights)]
@@ -166,51 +163,62 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
                                      name=f'{label}: assumed epochs', legendgroup=label, showlegend=False,
                                      hovertext=[f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d}' for i in idx], hoverinfo='text'), row=1, col=1)
         epochs |= placed
-        window |= table.requested[:, j]
-        if mode == 'alt':
-            light |= table.max_alt[:, j] >= MIN_ALT
-            dark |= table.transit[:, j] & (table.max_alt[:, j] >= MIN_ALT)
-        else:
-            light |= table.hours[:, j] > 0
-            dark |= table.hours[:, j] >= phase2.GOOD_HOURS
     if show_moon:
         fig.add_trace(go.Scatter(x=dates, y=first_table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination',
                                  hovertemplate='Moon %{y:.0%}<extra></extra>'), row=1, col=1)
         fig.data[-1].update(yaxis='y3')
-    # the strip: one row for every chosen target together
-    moon_shown = show_moon and not first_table.moon_ok.all()
-    cats = np.zeros(n_nights, int)
-    cats[light] = CAT_INDEX['obs']
-    cats[dark] = CAT_INDEX['good']
-    if moon_shown:
-        cats[~first_table.moon_ok] = CAT_INDEX['moon']
-    label = 'chosen targets'
-    hover = [f'{d:%Y-%m-%d}: ' + ('some target at transit' if mode == 'alt' and dk else ('some target ≥ 3 h' if mode != 'alt' and dk else ('some target observable' if lt else 'no target observable')))
-             + (', requested OBS_WINDOW' if w else '') + (', in the entered range' if pl else '') + f', Moon {m:.0%}' + (' (unsuitable)' if moon_shown and not ok else '')
-             for d, lt, dk, w, pl, m, ok in zip(first_table.dates, light, dark, window, planned, first_table.moon, first_table.moon_ok)]
-    fig.add_trace(heatmap(dates, [label], cats[None, :], [hover]), row=2, col=1)
-    if epochs.any():
-        idx = np.flatnonzero(epochs)
-        fig.add_trace(go.Scatter(x=[dates[i] for i in idx], y=[label] * len(idx), mode='markers', marker=dict(symbol='diamond', size=8, color=WINDOW_COLOR, line=dict(color='white', width=1)),
-                                 name='assumed epoch', hovertext=[f'{first_table.dates[i]:%Y-%m-%d}: ' + ', '.join(epoch_names[i]) for i in idx], hoverinfo='text'), row=2, col=1)
+    # the strips: one row per chosen target
+    moon_shown = show_moon
+    labels, cats, hover, ranges, requested, epoch_rows, epoch_texts = [], [], [], [], [], [], []
+    for req, table, j in items:
+        t = req.targets[j]
+        label = f'{req.key} {t.display}'
+        parts = [p for p in phase2.plans_of(plans, req, j) if p.settings.enabled]
+        rng, placed = np.zeros(n_nights, bool), np.zeros(n_nights, bool)
+        for p in parts:
+            rng |= p.in_range
+            placed |= p.placed
+        c = np.zeros(n_nights, int)
+        if mode == 'alt':
+            c[table.max_alt[:, j] >= MIN_ALT] = CAT_INDEX['obs']
+            c[table.transit[:, j] & (table.max_alt[:, j] >= MIN_ALT)] = CAT_INDEX['good']
+        else:
+            c[table.hours[:, j] > 0] = CAT_INDEX['obs']
+            c[table.hours[:, j] >= phase2.GOOD_HOURS] = CAT_INDEX['good']
+        if moon_shown:
+            c[~table.moon_ok] = CAT_INDEX['moon']
+        labels.append(label)
+        cats.append(c)
+        ranges.append(rng)
+        requested.append(table.requested[:, j])
+        epoch_rows.append(placed)
+        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested OBS_WINDOW' if w else '') + (', in the entered range' if r_ else '')
+                      + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
+                      for d, h, a, w, r_, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], rng, table.moon, table.moon_ok)])
+        epoch_texts.append([f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
+                            for i in range(n_nights)])
+    fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
+    fig.add_trace(dot_trace(dates, labels, epoch_rows, 'assumed epoch', epoch_texts), row=2, col=1)
     half = timedelta(hours=12)
     shapes = []
+    for k, (rng, req_mask) in enumerate(zip(ranges, requested)):
+        for a, b in runs(rng):
+            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k, y1=k, line=dict(color=WINDOW_COLOR, width=4), layer='above'))
+        for a, b in runs(req_mask):
+            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k + 0.36, y1=k + 0.36, line=dict(color='#1f77b4', width=2), layer='above'))
     for a, b in runs(planned):
-        shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=0, y1=0, line=dict(color=WINDOW_COLOR, width=4), layer='above'))
-        shapes.append(dict(type='rect', xref='x', yref='paper', x0=dates[a] - half, x1=dates[b] + half, y0=0.2, y1=1, fillcolor='rgba(0,0,0,0)',
+        shapes.append(dict(type='rect', xref='x', yref='paper', x0=dates[a] - half, x1=dates[b] + half, y0=1 - 330 / (330 + strip_h), y1=1, fillcolor='rgba(0,0,0,0)',
                            line=dict(color=WINDOW_COLOR, width=2, dash='dot'), layer='above'))
-    for a, b in runs(window):
-        shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=0.36, y1=0.36, line=dict(color='#1f77b4', width=2), layer='above'))
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
     shapes.append(dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash')))
-    category_legend(['obs', 'good'] + (['moon'] if moon_shown else []), fig, row=2, col=1)
+    category_legend(['obs', 'good'] + (['moon'] if moon_shown and any(not tb.moon_ok.all() for _, tb, _ in items) else []), fig, row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name='obs_starttime to obs_endtime', hoverinfo='skip'), row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#1f77b4', width=2), name='OBS_WINDOW (requested)', hoverinfo='skip'), row=2, col=1)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
-    fig.update_layout(height=330 + 80 + 100, margin=dict(l=10, r=10, t=10, b=10), shapes=shapes, hovermode='closest',
+    fig.update_layout(height=330 + strip_h + 100, margin=dict(l=10, r=10, t=10, b=10), shapes=shapes, hovermode='closest',
                       yaxis=dict(title='max altitude (°)' if mode == 'alt' else 'observable hours (h)', rangemode='tozero'),
                       yaxis3=dict(overlaying='y', side='right', range=[0, 1], tickformat='.0%', showgrid=False, title='Moon'),
-                      yaxis2=dict(type='category', tickfont=dict(size=10)), xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]),
+                      yaxis2=dict(type='category', tickfont=dict(size=10), autorange='reversed'), xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]),
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
     return fig
 
@@ -508,8 +516,8 @@ def visibility_section(requests: list, tables: dict, plans: dict, grid: vis.Seas
     items = [(by_key[k], tables[k], j) for k, j in chosen]
     st.plotly_chart(visibility_figure(items, grid, mode, show_moon, plans), width='stretch', key='sch_vis_fig', config={'displaylogo': False})
     st.caption(f'Top: every chosen target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the assumed epochs; dotted red outline = the entered obs_starttime to obs_endtime. '
-               'Bottom: one bar for all chosen targets together: light green = some target observable (max altitude ≥ 30° / > 0 h), dark green = some target at transit / ≥ 3 h, '
-               'yellow = Moon unsuitable for the first project; red centre line = the entered range with the assumed epochs as diamonds; thin blue line = the OBS_WINDOW the PI requested.')
+               'Bottom: one bar per chosen target: light green = observable (max altitude ≥ 30° / > 0 h), dark green = at transit / ≥ 3 h, '
+               'yellow = Moon unsuitable for its project; red centre line = its entered range with the assumed epochs as diamonds; thin blue line = the OBS_WINDOW the PI requested.')
 
 
 def all_projects_section(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) -> None:
