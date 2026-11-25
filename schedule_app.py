@@ -352,7 +352,7 @@ def simulation_section(plans: dict, grid: vis.SeasonGrid, key: tuple, sun_alt: f
     st.download_button('Download simulation summary (CSV)', data=df.to_csv(index=False).encode(), file_name='7dt_simulation_summary.csv', mime='text/csv', key='sch_sim_csv')
     dates = [datetime.combine(d, datetime.min.time()) for d in result.dates]
     labels = [k.replace('#1', '') if k.endswith('#1') and plans[k].part == 1 and len(phase2.plans_of(plans, plans[k].req, plans[k].j)) == 1 else k for k in result.keys]
-    fig = go.Figure(go.Heatmap(x=dates, y=labels, z=result.prob, zmin=0, zmax=1, colorscale='Reds', colorbar=dict(title='P(epoch)'),
+    fig = go.Figure(go.Heatmap(x=dates, y=labels, z=result.prob, zmin=0, zmax=1, colorscale='Reds', colorbar=dict(title='Probability'),
                                hovertemplate='%{y} %{x|%Y-%m-%d}: %{z:.2f}<extra></extra>'))
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=16 * len(labels) + 120, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]), yaxis=dict(type='category', autorange='reversed', tickfont=dict(size=9)))

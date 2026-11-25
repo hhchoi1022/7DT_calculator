@@ -188,7 +188,6 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         epoch_texts.append([f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
                             for i in range(n_nights)])
     fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
-    fig.add_trace(dot_trace(dates, labels, epoch_rows, epoch_label, epoch_texts), row=2, col=1)
     half = timedelta(hours=12)
     shapes = []
     for k, (rng, req_mask) in enumerate(zip(ranges, requested)):
@@ -207,6 +206,7 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         legend.append((phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][1], phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][2]))
     for label, color in legend:                    # the strip legend follows the y axis: the same greens mean altitude / transit or hours
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'), row=2, col=1)
+    fig.add_trace(dot_trace(dates, labels, epoch_rows, epoch_label, epoch_texts), row=2, col=1)      # legend: the diamonds right before the scheduled range
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name=range_label, hoverinfo='skip'), row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#1f77b4', width=2), name='OBS_WINDOW (requested)', hoverinfo='skip'), row=2, col=1)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
@@ -388,7 +388,7 @@ def probability_figure(result, keys: list, labels: list, height_per_row: int = 1
     rows = [result.keys.index(k) for k in keys if k in result.keys]
     z = result.prob[rows] if rows else np.zeros((0, len(dates)))
     fig = go.Figure(go.Heatmap(x=dates, y=[labels[n] for n, k in enumerate(keys) if k in result.keys], z=z, zmin=0, zmax=1, colorscale='Reds',
-                               colorbar=dict(title='P(epoch)', thickness=12), hovertemplate='%{y} %{x|%Y-%m-%d}: %{z:.2f}<extra></extra>'))
+                               colorbar=dict(title='Probability', thickness=12), hovertemplate='%{y} %{x|%Y-%m-%d}: %{z:.2f}<extra></extra>'))
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=height_per_row * max(len(rows), 1) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
                       yaxis=dict(type='category', autorange='reversed', tickfont=dict(size=10)))
