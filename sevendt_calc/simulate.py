@@ -90,6 +90,42 @@ def load_fixed_programmes(grid: vis.SeasonGrid, cfg: dict | None = None, path=No
     return out
 
 
+def _place_quiet(allowed: list, free: list, dur: float, csum: np.ndarray, night_len: float, step: float = 1.0 / 12.0):
+    """
+    Like _place, but among the starts that fit choose the one whose slot overlaps the least open-time demand
+    (`csum`: cumulative demand over a grid of `step` hours, csum[0] = 0); ties go to the earliest start.
+    Fixed programmes are up for long stretches, so they move away from the hours that other targets need.
+    """
+    best, best_cost = None, None
+    n_bins = len(csum) - 1
+    for lo, hi in allowed:
+        for a, b in free:
+            s0, e0 = max(lo, a), min(hi, b)
+            if e0 - s0 < dur - 1e-9:
+                continue
+            starts = np.arange(s0, e0 - dur + 1e-9, step)
+            if starts.size == 0 or starts[-1] < e0 - dur - 1e-9:
+                starts = np.append(starts, e0 - dur)                  # the latest start of this stretch too
+            i0 = np.minimum((starts / step).astype(int), n_bins)
+            i1 = np.minimum(((starts + dur) / step).astype(int) + 1, n_bins)
+            costs = csum[i1] - csum[i0]
+            k = int(np.argmin(costs))
+            if best is None or costs[k] < best_cost - 1e-9:
+                best, best_cost = float(starts[k]), float(costs[k])
+    if best is None:
+        return None, free
+    new = []
+    for a, b in free:
+        if b <= best + 1e-9 or a >= best + dur - 1e-9:
+            new.append((a, b))
+        else:
+            if a < best - 1e-9:
+                new.append((a, best))
+            if b > best + dur + 1e-9:
+                new.append((best + dur, b))
+    return best, new
+
+
 def _place(allowed: list, free: list, dur: float):
     """Earliest start inside one of the `allowed` intervals that is also inside a `free` interval of length >= dur; the free list after taking it."""
     best = None
@@ -150,9 +186,10 @@ class SimulationResult:
 def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, bad_weather: float = 0.1, seed: int = 0, jitter: float = 0.25) -> SimulationResult:
     """
     plans: part key -> TargetPlan (feasibility and per-night intervals already computed). Each run draws the
-    weather, then walks the nights: fixed programmes first (every tile, earliest free slot inside its
-    time above the limit), then the parts with remaining epochs whose cadence allows a visit, most urgent
-    first (feasible nights ahead per remaining epoch, with random jitter so that ties vary between runs).
+    weather, then walks the nights: fixed programmes first (every tile, inside its time above the limit, in
+    the slot that the open-time candidates of the night need least), then the parts with remaining epochs
+    whose cadence allows a visit, most urgent first (feasible nights ahead per remaining epoch, with random
+    jitter so that ties vary between runs), each in the earliest free slot while the target is up.
     """
     rng = np.random.default_rng(seed)
     keys = [k for k, p in plans.items() if p.settings.enabled and p.epoch_h > 0 and p.settings.epochs >= 1]
@@ -177,6 +214,24 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
             if not clear[r, i]:
                 continue
             free = [(0.0, float(night_len[i]))]
+            # open-time demand tonight: how badly each hour of the night is needed by the parts that could use it
+            step = 1.0 / 12.0
+            n_bins = int(night_len[i] / step) + 2
+            density = np.zeros(n_bins)
+            tonight = []
+            for k in keys:
+                p = plans[k]
+                if remaining[k] <= 0 or not p.intervals[i]:
+                    continue
+                cad = p.settings.cadence
+                if cad > 0 and last[k] is not None and i - last[k] < cad:
+                    continue
+                tonight.append(k)
+                room = sum(hi - lo for lo, hi in p.intervals[i])
+                weight = p.epoch_h / max(room, p.epoch_h) / max(ahead[k][i], 1)       # scarce windows and few nights ahead weigh most
+                for lo, hi in p.intervals[i]:
+                    density[int(lo / step):min(int(hi / step) + 1, n_bins)] += weight
+            csum = np.concatenate([[0.0], np.cumsum(density)])
             for prog in fixed:
                 if prog.cadence_days and last_fixed[prog.name] is not None and i - last_fixed[prog.name] < prog.cadence_days:
                     continue
@@ -188,7 +243,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
                         allowed = prog.intervals(i, j)
                         if prev is not None:                            # the next visit of the same tile at least gap_hours later
                             allowed = [(max(lo, prev + prog.gap_hours), hi) for lo, hi in allowed if hi - max(lo, prev + prog.gap_hours) > 1e-9]
-                        start, free = _place(allowed, free, prog.epoch_h)
+                        start, free = _place_quiet(allowed, free, prog.epoch_h, csum, float(night_len[i]), step)
                         if start is None:
                             break
                         prev = start
