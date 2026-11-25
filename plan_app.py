@@ -19,7 +19,7 @@ import streamlit as st
 
 from schedule_plots import (CAT_INDEX, MIN_ALT, SIM_BAD_WEATHER, SIM_RUNS, dot_trace, fixed_signature, heatmap, load_requests_cached, night_dates, night_figure, night_tables,
                             probability_figure, program_data, projects_figure, projects_signature, projects_table, saved_plans, schedule_signature, simulated_saved,
-                            visibility_figure, warm_program_data)
+                            visibility_figure, warm_program_data, with_expected)
 from sevendt_calc import keyguard, phase2, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, live_text_input, site_key
@@ -54,7 +54,7 @@ def plan_frame(req: phase2.RequestFile, plans: dict, dates: list, sim_rows: dict
                          'P(all epochs)': sim.get('p_complete') if s.enabled else None, 'Epochs expected': sim.get('epochs_done_mean') if s.enabled else None,
                          'First epoch (10–90 %)': f"{sim['first_10']} – {sim['first_90']}" if sim.get('first_10') and s.enabled else '',
                          'Last epoch (50 %)': sim.get('last_50', '') if s.enabled else '', 'Last epoch (90 %)': sim.get('last_90', '') if s.enabled else '',
-                         'Assumed epoch nights': nights, 'Status': 'not scheduled' if not s.enabled else p.status, 'Note': s.note,
+                         ('Expected epoch nights' if sim_rows else 'Assumed epoch nights'): nights, 'Status': 'not scheduled' if not s.enabled else p.status, 'Note': s.note,
                          'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Requester_note': t.note})
     return pd.DataFrame(rows)
 
@@ -73,9 +73,9 @@ def project_header(req: phase2.RequestFile, plans: dict, dates: list) -> None:
     m[0].metric('Allocated', f'{req.allocated_hours:.1f} h' if req.allocated_hours is not None else 'n/a')
     m[1].metric('Requested', f'{req.total_h:.1f} h')
     m[2].metric('Planned (with overheads)', f'{planned:.1f} h')
-    m[3].metric('Epochs', f'{int(sum(p.n_placed for p in on))}')
-    m[4].metric('First epoch', dates[nights[0]].isoformat() if nights.size else '-')
-    m[5].metric('Last epoch', dates[nights[-1]].isoformat() if nights.size else '-')
+    m[3].metric('Epochs expected', f'{int(sum(p.n_placed for p in on))} of {int(sum(p.settings.epochs for p in on))}')
+    m[4].metric('First epoch (expected)', dates[nights[0]].isoformat() if nights.size else '-')
+    m[5].metric('Last epoch (expected)', dates[nights[-1]].isoformat() if nights.size else '-')
     bad = [p for p in on if p.issues]
     if bad:
         st.warning('Rows the operator still has to settle: ' + '; '.join(f'{p.target.display}: {"; ".join(p.issues)}' for p in bad))
@@ -93,7 +93,7 @@ def visibility_block(req: phase2.RequestFile, tables: dict, plans: dict, grid: v
         return
     items = [(req, tables[req.key], j) for j in chosen]
     st.plotly_chart(visibility_figure(items, grid, 'alt' if mode.startswith('Max') else 'hours', show_moon, plans), width='stretch', key=f'{prefix}_vis_fig', config={'displaylogo': False})
-    st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the nights on which an epoch is assumed; dotted red = the planned obs_starttime to obs_endtime. '
+    st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the expected epoch nights; dotted red = the planned obs_starttime to obs_endtime. '
                'Bottom: one bar per target: greens = observable (light > 0 h, dark = at transit / ≥ 3 h), yellow = Moon unsuitable for your sky background; red line = the planned range, thin blue line = your requested OBS_WINDOW.')
 
 
@@ -130,7 +130,7 @@ def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: s
     hover = [[t + (', epoch assumed' if o else '') for t, o in zip(own_text, own)],
              [f'{d:%Y-%m-%d}: ' + ('another programme has an epoch' if o else 'free of other epochs') for d, o in zip(table.dates, others)]]
     fig = go.Figure(heatmap(dates, labels, cats, hover))
-    fig.add_trace(dot_trace(dates, labels, [own, others], 'assumed epoch', [[f'{d:%Y-%m-%d}: your epoch' for d in table.dates], ['another programme' for _ in table.dates]]))
+    fig.add_trace(dot_trace(dates, labels, [own, others], 'expected epoch', [[f'{d:%Y-%m-%d}: your epoch' for d in table.dates], ['another programme' for _ in table.dates]]))
     for label, color in legend:
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'))
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()), datetime.combine(phase2.PROGRAM_END, datetime.min.time())
@@ -149,7 +149,8 @@ def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.S
                                 'Epochs expected': st.column_config.NumberColumn(format='%.1f')})
     st.download_button('Download this plan (CSV)', data=df.to_csv(index=False).encode(), file_name=f'7dt_plan_{req.key}.csv', mime='text/csv', key=f'{prefix}_csv_{req.key}')
     st.caption('obs_starttime / obs_endtime are UTC (a date alone = that whole local night); count = frames per filter in one epoch; target_epoch = number of epochs; '
-               'Total exptime = exptime × count × target_epoch × orders of the mode; the assumed nights are where an automatic scheduler is expected to put the epochs.')
+               'Total exptime = exptime × count × target_epoch × orders of the mode; the expected epoch nights are the median nights of each epoch over the simulated runs '
+               '(epochs that happen in fewer than half of the runs are left out).')
     if sim is not None:
         st.subheader('Expected observation dates')
         fixed_text = '; '.join(f'{name} ({n} tiles around {tile}, ' + (f'every {cad} d' if cad else 'every clear night') + ')' for name, n, tile, cad in sim['fixed'])
@@ -266,6 +267,8 @@ def main():
             sim = simulated_saved(str(folder), signature, projects_sig, schedule_signature(str(folder)), key, sun_alt, fixed_signature())
         except Exception:                             # the plan is still shown when the simulation fails
             sim = None
+    if sim is not None:
+        plans = with_expected(plans, sim['expected'])      # diamonds and epoch counts follow the simulation
     grid = data['grid']
     if is_admin:
         admin_view(requests, tables, plans, grid, sim)

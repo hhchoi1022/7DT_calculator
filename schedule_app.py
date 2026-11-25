@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from schedule_plots import (MIN_ALT, WINDOW_COLOR, load_requests_cached, night_figure, night_tables, program_data, projects_figure, projects_signature,
-                            projects_table, visibility_figure, warm_program_data)
+                            projects_table, visibility_figure, warm_program_data, with_expected)
 from sevendt_calc import phase2, sheets, simulate, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, site_key
@@ -337,6 +337,8 @@ def simulation_section(plans: dict, grid: vis.SeasonGrid, key: tuple, sun_alt: f
         with st.spinner(f'{runs} runs...'):
             result = simulate.simulate(plans, grid, fixed, runs=runs, bad_weather=bad, seed=seed)
         ss['sch_sim_result'] = (result, simulate.summary_rows(result, plans))
+        ss['sch_sim_expected'] = result.expected_by_key()
+        st.rerun()                                       # the figures above now show the expected epoch nights
     result, rows = ss['sch_sim_result']
     df = pd.DataFrame(rows)
     n_low = int((df['p_complete'] < 0.9).sum())
@@ -424,11 +426,16 @@ def main():
     st.caption(f'{len(requests)} request files in {folder} · programme {phase2.PROGRAM_START} to {phase2.PROGRAM_END} · altitude limit {MIN_ALT:g}° · '
                f'dates are local nights (evening date); times UTC.')
     plans, _ = plan_section(requests, tables)
+    if ss.get('sch_sim_expected'):
+        plans_fig = with_expected(plans, ss['sch_sim_expected'])
+        st.caption('Diamonds and epoch counts below follow the last simulation run (expected epoch nights); run it again after editing the plan.')
+    else:
+        plans_fig = plans
     st.subheader('Project summary')
     st.caption('Per project: requested and planned time against the allocation, and when the assumed epochs fall. Tick a row (or pick below) to preselect it in the visibility plot.')
-    req = select_project(requests, projects_table(requests, plans, list(grid.dates)))
-    visibility_section(requests, tables, plans, grid, req)
-    all_projects_section(requests, tables, plans, grid)
+    req = select_project(requests, projects_table(requests, plans_fig, list(grid.dates)))
+    visibility_section(requests, tables, plans_fig, grid, req)
+    all_projects_section(requests, tables, plans_fig, grid)
     simulation_section(plans, grid, key, sun_alt)
     export_section(requests, plans, folder)
     observation_list_section(requests, plans, folder)

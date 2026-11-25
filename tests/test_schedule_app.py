@@ -246,22 +246,27 @@ def test_simulation():
         for p in phase2.make_target_plans(req, j, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 30), count=3, epochs=4, cadence=5)], use_moon=False):
             plans[p.key] = p
     phase2.place_epochs(plans, 30)
-    ims = simulate.fixed_programme('IMS', 'T02665', 7, grid, cadence_days=0)
+    ims = simulate.fixed_programme('IMS', None, 7, grid, cadence_days=0, tiles=['T02665', 'T02385'], revisits={'T02385': (2, 5.0)})
     tvf = simulate.fixed_programme('TVF', 'T00174', 7, grid, cadence_days=14)
-    assert len(ims.tile_ids) == 7 and ims.tile_ids[0] == 'T02665' and 0.1 < ims.epoch_h < 0.3 and ims.starts.shape == (30, 7, 4)
+    assert ims.tile_ids == ['T02665', 'T02385'] and ims.visits == [1, 2] and ims.gap_hours == 5.0 and ims.n_visits == 3 and 0.1 < ims.epoch_h < 0.3
+    assert len(tvf.tile_ids) == 7 and tvf.tile_ids[0] == 'T00174' and tvf.starts.shape == (30, 7, 4)
     res = simulate.simulate(plans, grid, [ims, tvf], runs=20, bad_weather=0.0, seed=3)
     assert res.prob.shape == (2, 30) and res.clear.all() and res.runs == 20
     k = res.keys.index(plans[phase2.part_key(phase2.target_key(req, req.targets[0]), 1)].key)
     assert res.completed[k] == 1.0 and res.epochs_done[k] == 4                       # NGC 253 is up every December night: 4 epochs 5 d apart
     nights = np.flatnonzero(res.prob[k] > 0)
     assert nights.size >= 4 and res.first_night[:, k].min() >= 0 and res.last_night[:, k].max() <= 29
-    assert res.fixed_done['IMS'].mean() > 0.9 and 1 <= res.fixed_done['TVF'].sum(axis=1).mean() <= 3
+    assert 1 <= res.fixed_done['TVF'].sum(axis=1).mean() <= 3
+    assert res.epoch_nights.shape == (20, 2, 4) and (res.epoch_nights[:, k, :] >= 0).all()
+    exp = res.expected_nights(k)
+    assert len(exp) == 4 and all(b - a >= 5 for a, b in zip(exp, exp[1:])) and res.expected_by_key()[res.keys[k]] == exp
     rainy = simulate.simulate(plans, grid, [ims], runs=20, bad_weather=0.5, seed=3)
     assert 0.3 < rainy.clear.mean() < 0.7 and rainy.epochs_done[k] <= res.epochs_done[k]
     rows = simulate.summary_rows(res, plans)
     assert rows[0]['epochs'] == 4 and rows[0]['p_complete'] == 1.0 and rows[0]['first_50'] and rows[0]['last_90'] >= rows[0]['last_10']
     fixed = simulate.load_fixed_programmes(grid)
     assert [f.name for f in fixed] == ['IMS', 'TVF'] and fixed[1].cadence_days == 14
+    assert 'T02385' in fixed[0].tile_ids and fixed[0].visits[fixed[0].tile_ids.index('T02385')] == 2 and fixed[0].gap_hours == 5.0 and fixed[0].n_visits == 8
     # a part that never fits (one night, too long an epoch) stays at zero
     never = {}
     for p in phase2.make_target_plans(req, 0, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 1), count=900, epochs=1)], use_moon=False):

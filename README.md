@@ -178,10 +178,13 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   `sheets.replace_rows` (service-account key as for the request page) or offers as CSV. Strip charts use
   `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
   `simulate.simulate` is the Monte-Carlo scheduler behind "Simulated scheduling": each run draws the weather,
-  places the fixed programmes of `data/fixed_programmes.json` (IMS every clear night, TVF every 14 d; n tiles
-  around a centre tile, one visit each) and then the parts with remaining epochs, most urgent first
+  places the fixed programmes of `data/fixed_programmes.json` (IMS every clear night with T02385 twice at
+  least 5 h apart, TVF every 14 d; explicit tiles or n tiles around a centre tile) and then the parts with
+  remaining epochs, most urgent first
   (feasible nights ahead / remaining epochs / cadence, with random jitter), each in the earliest free slot
-  while the target is up; results are the per-night epoch probability, p_complete and date percentiles.
+  while the target is up; results are the per-night epoch probability, p_complete, date percentiles and the
+  expected epoch nights (median night of every epoch over the runs), which the viewer (and the operator
+  page after a run) draws as the diamonds instead of the deterministic placement.
   Strip charts use `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
   heatmap with a discrete colour scale with the assumed epochs as diamonds on the rows (category labels as y:
   numbers would add rows '0', '1', ...). The visibility figure has two panels: curves with epoch diamonds,

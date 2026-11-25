@@ -364,7 +364,21 @@ def simulated_saved(folder: str, signature: tuple, projects_sig: tuple, schedule
     fixed = simulate.load_fixed_programmes(grid, live_config())
     result = simulate.simulate(plans, grid, fixed, runs=SIM_RUNS, bad_weather=SIM_BAD_WEATHER, seed=SIM_SEED)
     rows = {f"{r['project']}|{r['target']}#{r['part']}": r for r in simulate.summary_rows(result, plans)}
-    return {'result': result, 'rows': rows, 'fixed': [(f.name, len(f.tile_ids), f.tile_ids[0], f.cadence_days) for f in fixed]}
+    return {'result': result, 'rows': rows, 'expected': result.expected_by_key(), 'fixed': [(f.name, len(f.tile_ids), f.tile_ids[0], f.cadence_days) for f in fixed]}
+
+
+def with_expected(plans: dict, expected: dict) -> dict:
+    """Copies of the plans whose `placed` nights are the simulation's expected epoch nights (parts without a result keep theirs)."""
+    import dataclasses
+    out = {}
+    for k, p in plans.items():
+        if k in expected:
+            placed = np.zeros(len(p.placed), bool)
+            placed[list(expected[k])] = True
+            out[k] = dataclasses.replace(p, placed=placed)
+        else:
+            out[k] = p
+    return out
 
 
 def probability_figure(result, keys: list, labels: list, height_per_row: int = 18) -> go.Figure:
