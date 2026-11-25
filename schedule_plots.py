@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from sevendt_calc import phase2, trigger
+from sevendt_calc import phase2, simulate, trigger
 from sevendt_calc import visibility as vis
 from ui_common import live_config, season_grid_for, site_key
 
@@ -344,3 +344,37 @@ def projects_table(requests: list, plans: dict, dates: list) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+
+
+# ------------------------------------------------------------------ simulation of the saved schedule (viewer) and its figure
+SIM_RUNS, SIM_BAD_WEATHER, SIM_SEED = 200, 0.10, 1
+
+
+def fixed_signature() -> tuple:
+    from pathlib import Path
+    p = Path(trigger.PROJECTS_JSON).parent / 'fixed_programmes.json'
+    return (str(p), p.stat().st_mtime_ns) if p.is_file() else (str(p), 0)
+
+
+@st.cache_resource(show_spinner=False)
+def simulated_saved(folder: str, signature: tuple, projects_sig: tuple, schedule_sig: tuple, key: tuple, sun_alt: float, fixed_sig: tuple) -> dict:
+    """The Monte-Carlo scheduling of the saved schedule (SIM_RUNS runs, SIM_BAD_WEATHER of the nights lost), once per change of the schedule file."""
+    plans = saved_plans(folder, signature, projects_sig, schedule_sig, key, sun_alt)
+    grid = program_data(key, sun_alt)['grid']
+    fixed = simulate.load_fixed_programmes(grid, live_config())
+    result = simulate.simulate(plans, grid, fixed, runs=SIM_RUNS, bad_weather=SIM_BAD_WEATHER, seed=SIM_SEED)
+    rows = {f"{r['project']}|{r['target']}#{r['part']}": r for r in simulate.summary_rows(result, plans)}
+    return {'result': result, 'rows': rows, 'fixed': [(f.name, len(f.tile_ids), f.tile_ids[0], f.cadence_days) for f in fixed]}
+
+
+def probability_figure(result, keys: list, labels: list, height_per_row: int = 18) -> go.Figure:
+    """Heatmap of the per-night epoch probability of the given part keys (rows labelled as given)."""
+    dates = [datetime.combine(d, datetime.min.time()) for d in result.dates]
+    rows = [result.keys.index(k) for k in keys if k in result.keys]
+    z = result.prob[rows] if rows else np.zeros((0, len(dates)))
+    fig = go.Figure(go.Heatmap(x=dates, y=[labels[n] for n, k in enumerate(keys) if k in result.keys], z=z, zmin=0, zmax=1, colorscale='Reds',
+                               colorbar=dict(title='P(epoch)', thickness=12), hovertemplate='%{y} %{x|%Y-%m-%d}: %{z:.2f}<extra></extra>'))
+    x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
+    fig.update_layout(height=height_per_row * max(len(rows), 1) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
+                      yaxis=dict(type='category', autorange='reversed', tickfont=dict(size=10)))
+    return fig

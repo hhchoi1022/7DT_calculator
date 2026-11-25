@@ -17,8 +17,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from schedule_plots import (CAT_INDEX, MIN_ALT, dot_trace, heatmap, load_requests_cached, night_dates, night_figure, night_tables, program_data, projects_figure,
-                            projects_signature, projects_table, saved_plans, schedule_signature, visibility_figure, warm_program_data)
+from schedule_plots import (CAT_INDEX, MIN_ALT, SIM_BAD_WEATHER, SIM_RUNS, dot_trace, fixed_signature, heatmap, load_requests_cached, night_dates, night_figure, night_tables,
+                            probability_figure, program_data, projects_figure, projects_signature, projects_table, saved_plans, schedule_signature, simulated_saved,
+                            visibility_figure, warm_program_data)
 from sevendt_calc import keyguard, phase2, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, live_text_input, site_key
@@ -38,19 +39,23 @@ def saved_text(folder: Path) -> str:
     return f'schedule as saved by the operator on {stamp.replace("T", " ")}' if stamp else 'schedule as saved by the operator'
 
 
-def plan_frame(req: phase2.RequestFile, plans: dict, dates: list) -> pd.DataFrame:
+def plan_frame(req: phase2.RequestFile, plans: dict, dates: list, sim_rows: dict | None = None) -> pd.DataFrame:
     rows = []
     for j, t in enumerate(req.targets):
         parts = phase2.plans_of(plans, req, j)
         for p in parts:
             s = p.settings
             nights = ', '.join(dates[i].isoformat() for i in np.flatnonzero(p.placed))
+            sim = (sim_rows or {}).get(p.key, {})
             rows.append({'Target': t.display, 'Part': f'{p.part}/{len(parts)}' if len(parts) > 1 else '', 'Type': t.target_type, 'Mode': t.mode_text,
                          'obs_starttime': s.start_text.replace('T', ' '), 'obs_endtime': s.end_text.replace('T', ' '), 'count': s.count, 'target_epoch': s.epochs,
                          'cadence (d)': s.cadence, 'Exptime (s)': t.exptime, 'Total exptime (h)': round((t.exptime or 0) * s.count * s.epochs * max(t.n_orders, 1) / 3600, 2),
-                         'With overhead (h)': round(p.planned_h, 2), 'Requested frames': t.nframes, 'Assumed epoch nights': nights,
-                         'Status': 'not scheduled' if not s.enabled else p.status, 'Note': s.note, 'obs_window_start': t.window_starts_text.replace('T', ' '),
-                         'obs_window_end': t.window_ends_text.replace('T', ' '), 'Requester_note': t.note})
+                         'With overhead (h)': round(p.planned_h, 2), 'Requested frames': t.nframes,
+                         'P(all epochs)': sim.get('p_complete') if s.enabled else None, 'Epochs expected': sim.get('epochs_done_mean') if s.enabled else None,
+                         'First epoch (10–90 %)': f"{sim['first_10']} – {sim['first_90']}" if sim.get('first_10') and s.enabled else '',
+                         'Last epoch (50 %)': sim.get('last_50', '') if s.enabled else '', 'Last epoch (90 %)': sim.get('last_90', '') if s.enabled else '',
+                         'Assumed epoch nights': nights, 'Status': 'not scheduled' if not s.enabled else p.status, 'Note': s.note,
+                         'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Requester_note': t.note})
     return pd.DataFrame(rows)
 
 
@@ -134,21 +139,32 @@ def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: s
     return fig
 
 
-def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.SeasonGrid, prefix: str = 'pl') -> None:
+def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.SeasonGrid, prefix: str = 'pl', sim: dict | None = None) -> None:
     dates = list(grid.dates)
     project_header(req, plans, dates)
-    df = plan_frame(req, plans, dates)
+    df = plan_frame(req, plans, dates, sim['rows'] if sim else None)
     st.dataframe(df, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 480),
                  column_config={'Total exptime (h)': st.column_config.NumberColumn(format='%.2f'), 'With overhead (h)': st.column_config.NumberColumn(format='%.2f'),
-                                'Exptime (s)': st.column_config.NumberColumn(format='%g')})
+                                'Exptime (s)': st.column_config.NumberColumn(format='%g'), 'P(all epochs)': st.column_config.NumberColumn(format='%.2f'),
+                                'Epochs expected': st.column_config.NumberColumn(format='%.1f')})
     st.download_button('Download this plan (CSV)', data=df.to_csv(index=False).encode(), file_name=f'7dt_plan_{req.key}.csv', mime='text/csv', key=f'{prefix}_csv_{req.key}')
     st.caption('obs_starttime / obs_endtime are UTC (a date alone = that whole local night); count = frames per filter in one epoch; target_epoch = number of epochs; '
                'Total exptime = exptime × count × target_epoch × orders of the mode; the assumed nights are where an automatic scheduler is expected to put the epochs.')
+    if sim is not None:
+        st.subheader('Expected observation dates')
+        fixed_text = '; '.join(f'{name} ({n} tiles around {tile}, ' + (f'every {cad} d' if cad else 'every clear night') + ')' for name, n, tile, cad in sim['fixed'])
+        st.caption(f'From {SIM_RUNS} simulated runs of the whole programme with {SIM_BAD_WEATHER:.0%} of the nights lost to weather at random; the fixed programmes '
+                   f'({fixed_text}) take their time first, then every scheduled target in order of urgency. P(all epochs) = share of runs in which all epochs of the row were observed; '
+                   'the dates are percentiles over the runs. The colour below is the probability of an epoch on that night.')
+        keys = [p.key for j in range(len(req.targets)) for p in phase2.plans_of(plans, req, j) if p.settings.enabled]
+        if keys:
+            labels = [f'{plans[k].target.display}' + (f' part {plans[k].part}' if len(phase2.plans_of(plans, req, plans[k].j)) > 1 else '') for k in keys]
+            st.plotly_chart(probability_figure(sim['result'], keys, labels), width='stretch', key=f'{prefix}_prob_{req.key}', config={'displaylogo': False})
     st.subheader('Visibility of your targets')
     visibility_block(req, tables, plans, grid, prefix)
 
 
-def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) -> None:
+def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, sim: dict | None = None) -> None:
     st.subheader('All programmes')
     df = projects_table(requests, plans, list(grid.dates))
     st.dataframe(df, hide_index=True, width='stretch', column_config={'Allocated (h)': st.column_config.NumberColumn(format='%.1f'), 'dither_arcsec': st.column_config.NumberColumn(format='%.0f')})
@@ -162,7 +178,7 @@ def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid) 
     keys = [r.key for r in requests]
     choice = st.selectbox('Programme', keys, format_func=lambda k: f'{k}: {next(r for r in requests if r.key == k).title[:90]}', key='pl_admin_project')
     req = next(r for r in requests if r.key == choice)
-    project_view(req, tables, plans, grid, prefix='pla')
+    project_view(req, tables, plans, grid, prefix='pla', sim=sim)
     st.subheader('One night')
     night = st.date_input('Night to inspect (local date of the evening)', value=conflicts[0]['date'] if conflicts else phase2.PROGRAM_START,
                           min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, key='pl_night')
@@ -245,16 +261,21 @@ def main():
         tables = night_tables(str(folder), signature, projects_sig, key, sun_alt)
         requests = load_requests_cached(str(folder), signature, projects_sig)
         plans = saved_plans(str(folder), signature, projects_sig, schedule_signature(str(folder)), key, sun_alt)
+    with st.spinner('Simulating the programme (once per saved schedule)...'):
+        try:
+            sim = simulated_saved(str(folder), signature, projects_sig, schedule_signature(str(folder)), key, sun_alt, fixed_signature())
+        except Exception:                             # the plan is still shown when the simulation fails
+            sim = None
     grid = data['grid']
     if is_admin:
-        admin_view(requests, tables, plans, grid)
+        admin_view(requests, tables, plans, grid, sim)
         return
     pid_norm = trigger.safe_project_id(pid)
     req = next((r for r in requests if r.project_id == pid_norm), None)
     if req is None:
         st.warning(f'No Phase-2 request of project {pid_norm} is registered yet.')
         return
-    project_view(req, tables, plans, grid)
+    project_view(req, tables, plans, grid, sim=sim)
     st.subheader('Your nights among the other programmes')
     mode = 'alt' if str(st.session_state.get('pl_yaxis', 'Max')).startswith('Max') else 'hours'
     st.plotly_chart(occupancy_figure(req, tables, plans, mode), width='stretch', key='pl_occ_fig', config={'displaylogo': False})

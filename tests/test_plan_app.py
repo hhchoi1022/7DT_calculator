@@ -73,6 +73,7 @@ def test_viewer_project_and_admin():
         assert not at.exception
         headers = [h.value for h in at.subheader]
         assert 'Visibility of your targets' in headers and 'Your nights among the other programmes' in headers and 'All programmes' not in headers
+        assert 'Expected observation dates' in headers and any('simulated runs' in c.value for c in at.caption)
         text = ' '.join(m.value for m in at.markdown)
         others = [r.key for r in requests if r is not req]
         assert req.key in text and not any(o in text for o in others)              # no other programme is named
