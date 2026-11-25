@@ -92,9 +92,10 @@ def load_fixed_programmes(grid: vis.SeasonGrid, cfg: dict | None = None, path=No
 
 def _place_quiet(allowed: list, free: list, dur: float, csum: np.ndarray, night_len: float, step: float = 1.0 / 12.0):
     """
-    Like _place, but among the starts that fit choose the one whose slot overlaps the least open-time demand
-    (`csum`: cumulative demand over a grid of `step` hours, csum[0] = 0); ties go to the earliest start.
-    Fixed programmes are up for long stretches, so they move away from the hours that other targets need.
+    Like _place, but only at an EDGE of a free stretch (its start or its end), choosing the edge whose slot
+    overlaps the least open-time demand (`csum`: cumulative demand over a grid of `step` hours, csum[0] = 0);
+    ties go to the earliest start. Edges never split a free stretch, so a long epoch that needs the stretch
+    whole can still use it; fixed programmes are up for long stretches and move to the quiet end.
     """
     best, best_cost = None, None
     n_bins = len(csum) - 1
@@ -103,15 +104,11 @@ def _place_quiet(allowed: list, free: list, dur: float, csum: np.ndarray, night_
             s0, e0 = max(lo, a), min(hi, b)
             if e0 - s0 < dur - 1e-9:
                 continue
-            starts = np.arange(s0, e0 - dur + 1e-9, step)
-            if starts.size == 0 or starts[-1] < e0 - dur - 1e-9:
-                starts = np.append(starts, e0 - dur)                  # the latest start of this stretch too
-            i0 = np.minimum((starts / step).astype(int), n_bins)
-            i1 = np.minimum(((starts + dur) / step).astype(int) + 1, n_bins)
-            costs = csum[i1] - csum[i0]
-            k = int(np.argmin(costs))
-            if best is None or costs[k] < best_cost - 1e-9:
-                best, best_cost = float(starts[k]), float(costs[k])
+            for start in (s0, e0 - dur):
+                i0, i1 = min(int(start / step), n_bins), min(int((start + dur) / step) + 1, n_bins)
+                cost = float(csum[i1] - csum[i0])
+                if best is None or cost < best_cost - 1e-9 or (abs(cost - best_cost) <= 1e-9 and start < best):
+                    best, best_cost = float(start), cost
     if best is None:
         return None, free
     new = []
@@ -187,7 +184,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
     """
     plans: part key -> TargetPlan (feasibility and per-night intervals already computed). Each run draws the
     weather, then walks the nights: fixed programmes first (every tile, inside its time above the limit, in
-    the slot that the open-time candidates of the night need least), then the parts with remaining epochs
+    the quieter edge of a free stretch so that the open-time candidates keep their windows whole), then the parts with remaining epochs
     whose cadence allows a visit, most urgent first (feasible nights ahead per remaining epoch, with random
     jitter so that ties vary between runs), each in the earliest free slot while the target is up.
     """
