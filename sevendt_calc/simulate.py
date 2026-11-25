@@ -125,6 +125,7 @@ class SimulationResult:
     clear: np.ndarray                   # (runs, nights) weather
     fixed_done: dict = field(default_factory=dict)      # programme name -> (runs, nights) every visit of the programme made that night
     runs: int = 0
+    fixed_visits: dict = field(default_factory=dict)    # programme name -> (runs, nights) number of visits made that night
     epoch_nights: np.ndarray = None     # (runs, parts, max epochs) night index of the e-th epoch, -1 when it did not happen
 
     def percentile_date(self, which: str, k: int, q: float):
@@ -166,6 +167,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
     epoch_nights = np.full((runs, len(keys), max_epochs), -1, int)
     clear = rng.random((runs, n_nights)) >= bad_weather
     fixed_done = {prog.name: np.zeros((runs, n_nights), bool) for prog in fixed}
+    fixed_visits = {prog.name: np.zeros((runs, n_nights), int) for prog in fixed}
     index = {k: n for n, k in enumerate(keys)}
     for r in range(runs):
         remaining = {k: int(plans[k].settings.epochs) for k in keys}
@@ -194,6 +196,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
                 if placed:
                     last_fixed[prog.name] = i
                 fixed_done[prog.name][r, i] = placed == prog.n_visits
+                fixed_visits[prog.name][r, i] = placed
             cands = []
             for k in keys:
                 p = plans[k]
@@ -219,7 +222,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
     last_ = np.where(done.any(axis=2), n_nights - 1 - done[:, :, ::-1].argmax(axis=2), -1)
     return SimulationResult(dates=list(grid.dates), keys=keys, prob=done.mean(axis=0), completed=(counts >= wanted[None, :]).mean(axis=0),
                             epochs_done=counts.mean(axis=0), epochs_wanted=wanted, first_night=first, last_night=last_, clear=clear, fixed_done=fixed_done, runs=runs,
-                            epoch_nights=epoch_nights)
+                            epoch_nights=epoch_nights, fixed_visits=fixed_visits)
 
 
 def summary_rows(result: SimulationResult, plans: dict) -> list:

@@ -92,7 +92,7 @@ def visibility_block(req: phase2.RequestFile, tables: dict, plans: dict, grid: v
     if not chosen:
         return
     items = [(req, tables[req.key], j) for j in chosen]
-    st.plotly_chart(visibility_figure(items, grid, 'alt' if mode.startswith('Max') else 'hours', show_moon, plans), width='stretch', key=f'{prefix}_vis_fig', config={'displaylogo': False})
+    st.plotly_chart(visibility_figure(items, grid, 'alt' if mode.startswith('Max') else 'hours', show_moon, plans, epoch_label='expected epoch'), width='stretch', key=f'{prefix}_vis_fig', config={'displaylogo': False})
     st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the expected epoch nights; dotted red = the planned obs_starttime to obs_endtime. '
                'Bottom: one bar per target: greens = observable (light > 0 h, dark = at transit / ≥ 3 h), yellow = Moon unsuitable for your sky background; red line = the planned range, thin blue line = your requested OBS_WINDOW.')
 

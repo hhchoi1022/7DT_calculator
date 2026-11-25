@@ -113,7 +113,7 @@ def dot_trace(dates: list, positions: list, masks: list, name: str, hover: list 
                       hovertext=texts, hoverinfo='text' if hover else 'skip')
 
 
-def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict) -> go.Figure:
+def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict, epoch_label: str = 'assumed epoch') -> go.Figure:
     """
     items: [(req, table, j)] chosen targets. Top: nightly maximum altitude or observable hours of every target,
     the assumed epochs as diamonds on the curves, the Moon illumination, the entered obs_starttime ..
@@ -149,8 +149,8 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         if placed.any():
             idx = np.flatnonzero(placed)
             fig.add_trace(go.Scatter(x=[dates[i] for i in idx], y=[y[i] for i in idx], mode='markers', marker=dict(symbol='diamond', size=9, color=WINDOW_COLOR, line=dict(color='white', width=1)),
-                                     name=f'{label}: assumed epochs', legendgroup=label, showlegend=False,
-                                     hovertext=[f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d}' for i in idx], hoverinfo='text'), row=1, col=1)
+                                     name=f'{label}: {epoch_label}s', legendgroup=label, showlegend=False,
+                                     hovertext=[f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d}' for i in idx], hoverinfo='text'), row=1, col=1)
         epochs |= placed
     if show_moon:
         fig.add_trace(go.Scatter(x=dates, y=first_table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination',
@@ -184,10 +184,10 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested OBS_WINDOW' if w else '') + (', in the entered range' if r_ else '')
                       + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
                       for d, h, a, w, r_, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], rng, table.moon, table.moon_ok)])
-        epoch_texts.append([f'{label}: epoch assumed on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
+        epoch_texts.append([f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
                             for i in range(n_nights)])
     fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
-    fig.add_trace(dot_trace(dates, labels, epoch_rows, 'assumed epoch', epoch_texts), row=2, col=1)
+    fig.add_trace(dot_trace(dates, labels, epoch_rows, epoch_label, epoch_texts), row=2, col=1)
     half = timedelta(hours=12)
     shapes = []
     for k, (rng, req_mask) in enumerate(zip(ranges, requested)):
