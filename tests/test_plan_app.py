@@ -83,3 +83,8 @@ def test_viewer_project_and_admin():
         assert not at.exception
         headers = [h.value for h in at.subheader]
         assert headers[0] == 'All programmes' and 'One night' in headers
+        if req is not None:                                           # admin + Project ID = that PI's view
+            at2 = _run(req.project_id, admin)
+            headers2 = [h.value for h in at2.subheader]
+            assert not at2.exception and 'All programmes' not in headers2 and 'Your nights among the other programmes' in headers2
+            assert any('Admin view of project' in c.value for c in at2.caption)

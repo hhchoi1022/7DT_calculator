@@ -113,7 +113,8 @@ def dot_trace(dates: list, positions: list, masks: list, name: str, hover: list 
                       hovertext=texts, hoverinfo='text' if hover else 'skip')
 
 
-def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict, epoch_label: str = 'assumed epoch') -> go.Figure:
+def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: bool, plans: dict, epoch_label: str = 'assumed epoch',
+                      range_label: str = 'obs_starttime to obs_endtime') -> go.Figure:
     """
     items: [(req, table, j)] chosen targets. Top: nightly maximum altitude or observable hours of every target,
     the assumed epochs as diamonds on the curves, the Moon illumination, the entered obs_starttime ..
@@ -206,7 +207,7 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         legend.append((phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][1], phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][2]))
     for label, color in legend:                    # the strip legend follows the y axis: the same greens mean altitude / transit or hours
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name='obs_starttime to obs_endtime', hoverinfo='skip'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name=range_label, hoverinfo='skip'), row=2, col=1)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#1f77b4', width=2), name='OBS_WINDOW (requested)', hoverinfo='skip'), row=2, col=1)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=330 + strip_h + 100, margin=dict(l=10, r=10, t=10, b=10), shapes=shapes, hovermode='closest',
@@ -392,3 +393,16 @@ def probability_figure(result, keys: list, labels: list, height_per_row: int = 1
     fig.update_layout(height=height_per_row * max(len(rows), 1) + 110, margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(type='date', range=[x0, x1]),
                       yaxis=dict(type='category', autorange='reversed', tickfont=dict(size=10)))
     return fig
+
+
+OPERATOR_NOTE_FILE = 'operator_note.txt'
+
+
+def read_operator_note(folder) -> str:
+    """The operator's note shown at the top of the schedule viewer ('' when there is none)."""
+    from pathlib import Path
+    path = Path(folder) / OPERATOR_NOTE_FILE
+    try:
+        return path.read_text(encoding='utf-8').strip() if path.is_file() else ''
+    except OSError:
+        return ''

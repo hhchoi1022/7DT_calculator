@@ -18,8 +18,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from schedule_plots import (MIN_ALT, WINDOW_COLOR, load_requests_cached, night_figure, night_tables, program_data, projects_figure, projects_signature,
-                            projects_table, visibility_figure, warm_program_data, with_expected)
+from schedule_plots import (MIN_ALT, OPERATOR_NOTE_FILE, WINDOW_COLOR, load_requests_cached, night_figure, night_tables, program_data, projects_figure, projects_signature,
+                            projects_table, read_operator_note, visibility_figure, warm_program_data, with_expected)
 from sevendt_calc import phase2, sheets, simulate, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, site_key
@@ -360,6 +360,19 @@ def simulation_section(plans: dict, grid: vis.SeasonGrid, key: tuple, sun_alt: f
     st.caption('Probability that the part gets an epoch on that night over the runs. Darker = more likely; an empty row = never scheduled (nothing fits in its range, or always beaten by others).')
 
 
+def operator_note_section(folder: Path) -> None:
+    """A note from the operator shown at the top of the schedule viewer (markdown), kept in the request folder."""
+    current = read_operator_note(folder)
+    with st.expander("Operator's note shown to the PIs at the top of the schedule page" + (' (set)' if current else ' (empty)'), expanded=False):
+        text = st.text_area('Note (markdown)', value=current, height=120, key='sch_operator_note', label_visibility='collapsed',
+                            placeholder='e.g. The schedule below is provisional until 2026-12-15; contact the operator for changes.')
+        c1, c2 = st.columns([1, 5])
+        if c1.button('Save note', key='sch_operator_note_save'):
+            (folder / OPERATOR_NOTE_FILE).write_text(text.strip() + ('\n' if text.strip() else ''), encoding='utf-8')
+            st.success('Saved; the schedule page shows it on its next load.' if text.strip() else 'Note cleared.')
+        c2.caption(f'Stored as {folder / OPERATOR_NOTE_FILE}; an empty note hides the box.')
+
+
 def export_section(requests: list, plans: dict, folder: Path) -> None:
     ss = st.session_state
     st.subheader('Save and export')
@@ -425,6 +438,7 @@ def main():
         ss['sch_signature'] = (signature, projects_sig)
     st.caption(f'{len(requests)} request files in {folder} · programme {phase2.PROGRAM_START} to {phase2.PROGRAM_END} · altitude limit {MIN_ALT:g}° · '
                f'dates are local nights (evening date); times UTC.')
+    operator_note_section(folder)
     plans, _ = plan_section(requests, tables)
     if ss.get('sch_sim_expected'):
         plans_fig = with_expected(plans, ss['sch_sim_expected'])
