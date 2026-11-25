@@ -96,7 +96,7 @@ def visibility_block(req: phase2.RequestFile, tables: dict, plans: dict, grid: v
                     width='stretch', key=f'{prefix}_vis_fig', config={'displaylogo': False})
     st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the expected observation nights; dotted red = OBS_WINDOW (scheduled). '
                'Bottom: one bar per target: greens = observable (light > 0 h, dark = at transit / ≥ 3 h), yellow = Moon unsuitable for your sky background; '
-               'red line = OBS_WINDOW (scheduled), thin blue line = the OBS_WINDOW you requested.')
+               'red line = the nights of OBS_WINDOW (scheduled); when it covers only part of a night, the UT times are in the hover; thin blue line = the OBS_WINDOW you requested.')
 
 
 def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: str = 'alt') -> go.Figure:

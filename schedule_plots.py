@@ -63,13 +63,32 @@ def night_dates(table: phase2.NightTable) -> list:
 
 
 def utc_text(grid: vis.SeasonGrid, i: int, hours: float) -> str:
-    t = datetime(2000, 1, 1) + timedelta(days=grid.start_jd[i] - 2451544.5 + hours / 24.0)
+    t = datetime(2000, 1, 1) + timedelta(days=grid.start_jd[i] - 2451544.5 + hours / 24.0, seconds=30)     # nearest minute
     return t.strftime('%H:%M')
 
 
 def slot_text(table: phase2.NightTable, grid: vis.SeasonGrid, i: int, j: int) -> str:
     parts = [f'{utc_text(grid, i, s)}–{utc_text(grid, i, e)} UT' for s, e in zip(table.starts[i, j], table.ends[i, j]) if not np.isnan(s)]
     return ', '.join(parts) if parts else f'below {MIN_ALT:g}° all night'
+
+
+def scheduled_texts(parts: list, grid: vis.SeasonGrid) -> list:
+    """Per night, the scheduled OBS_WINDOW of these parts inside that night as UT text ('whole night' for date-only ranges; '' when none)."""
+    n = len(grid.dates)
+    out = [''] * n
+    for p in parts:
+        for lo, hi in p.settings.bounds_jd(grid):
+            first = max(0, int(np.searchsorted(grid.end_jd, lo, side='right')) - 1)
+            for i in range(first, n):
+                if grid.start_jd[i] >= hi:
+                    break
+                a, b = max(lo, grid.start_jd[i]), min(hi, grid.end_jd[i])
+                if b - a <= 1e-9:
+                    continue
+                whole = a <= grid.start_jd[i] + 1e-6 and b >= grid.end_jd[i] - 1e-6
+                text = 'whole night' if whole else f'{utc_text(grid, i, (a - grid.start_jd[i]) * 24)}–{utc_text(grid, i, (b - grid.start_jd[i]) * 24)} UT'
+                out[i] = text if not out[i] or out[i] == text else f'{out[i]}, {text}'
+    return out
 
 
 def runs(mask: np.ndarray) -> list:
@@ -182,9 +201,10 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         ranges.append(rng)
         requested.append(table.requested[:, j])
         epoch_rows.append(placed)
-        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested OBS_WINDOW' if w else '') + (', in the entered range' if r_ else '')
+        sched = scheduled_texts(parts, grid)
+        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested OBS_WINDOW' if w else '') + (f', scheduled {sc}' if sc else '')
                       + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
-                      for d, h, a, w, r_, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], rng, table.moon, table.moon_ok)])
+                      for d, h, a, w, sc, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], sched, table.moon, table.moon_ok)])
         epoch_texts.append([f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
                             for i in range(n_nights)])
     fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
