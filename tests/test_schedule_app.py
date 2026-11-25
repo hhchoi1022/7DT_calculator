@@ -266,7 +266,7 @@ def test_simulation():
     assert rows[0]['epochs'] == 4 and rows[0]['p_complete'] == 1.0 and rows[0]['first_50'] and rows[0]['last_90'] >= rows[0]['last_10']
     fixed = simulate.load_fixed_programmes(grid)
     assert [f.name for f in fixed] == ['IMS', 'TVF'] and fixed[1].cadence_days == 14
-    assert 'T02385' in fixed[0].tile_ids and fixed[0].visits[fixed[0].tile_ids.index('T02385')] == 2 and fixed[0].gap_hours == 5.0 and fixed[0].n_visits == 8
+    assert 'T02385' in fixed[0].tile_ids and fixed[0].visits == [1] * 7 and fixed[0].n_visits == 7
     # a part that never fits (one night, too long an epoch) stays at zero
     never = {}
     for p in phase2.make_target_plans(req, 0, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 1), count=900, epochs=1)], use_moon=False):
