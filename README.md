@@ -154,8 +154,12 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   local night, both ends inclusive, a time cuts exactly there; several ranges comma-separated, the n-th
   start with the n-th end; the entered ranges are the master, the requested OBS_WINDOW is reference only
   (shown split into obs_window_start / obs_window_end) while timed windows still fix the time of night), count
-  (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free; the default
-  is read from 'cadence=7d' in the NOTE); a target set may be split into parts, each with its own
+  (frames per filter in one epoch), target_epoch (total epochs), cadence (days between nights, 0 = free; the
+  default is read from 'cadence=7d' in the NOTE), visits_per_night and gap_hours (several epochs in one
+  night, each at least gap_hours after the previous visit of the same tile that night, by this row or by a
+  fixed programme such as IMS; the per-night capacity comes from `phase2.visits_that_fit`), use_moon (the
+  project's Moon condition can be switched off per row, e.g. for nightly monitoring); a target set
+  may be split into parts, each with its own
   values (`make_target_plans`, part keys `project|target#n`, frames compared with NUM_FRAMES as a whole);
   one epoch lasts `phase2.epoch_hours` (exposure x orders
   plus the overhead model of one visit, cached per mode / exptime / count). `make_target_plan` marks the
@@ -178,9 +182,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   `sheets.replace_rows` (service-account key as for the request page) or offers as CSV. Strip charts use
   `phase2.strip_categories` (none / observable / >= 3 h / Moon unsuitable / conflict) drawn as one Plotly
   `simulate.simulate` is the Monte-Carlo scheduler behind "Simulated scheduling": each run draws the weather,
-  places the fixed programmes of `data/fixed_programmes.json` (IMS every clear night with T02385 twice at
-  least 5 h apart, TVF every 14 d; explicit tiles or n tiles around a centre tile) and then the parts with
-  remaining epochs, most urgent first
+  places the fixed programmes of `data/fixed_programmes.json` (IMS every clear night, TVF every 14 d;
+  explicit tiles or n tiles around a centre tile, optional revisits) and then the parts with remaining
+  epochs, most urgent first
   (feasible nights ahead / remaining epochs / cadence, with random jitter), each in the earliest free slot
   while the target is up; results are the per-night epoch probability, p_complete, date percentiles and the
   expected epoch nights (median night of every epoch over the runs), which the viewer (and the operator

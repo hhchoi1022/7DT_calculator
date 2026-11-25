@@ -1,8 +1,30 @@
 {
   "_description": "Programmes outside the open-time plan that the scheduling simulation places first every clear night. tiles: the 7DS tiles (or centre_tile + n_tiles for the nearest ones); one visit per tile of count frames of exptime seconds per filter of the Spec submode; cadence_days 0 = every clear night, n = at least n nights between visits; revisits: tiles visited more than once per night with at least gap_hours between the visits.",
   "programmes": [
-    {"name": "IMS", "tiles": ["T02665", "T02810", "T02523", "T02524", "T02664", "T02666", "T02385"], "cadence_days": 0, "exptime": 100, "count": 3, "submode": "specall",
-     "revisits": [{"tile": "T02385", "visits": 2, "gap_hours": 5}]},
-    {"name": "TVF", "centre_tile": "T00174", "n_tiles": 7, "cadence_days": 14, "exptime": 100, "count": 3, "submode": "specall"}
+    {
+      "name": "IMS",
+      "tiles": [
+        "T02665",
+        "T02810",
+        "T02523",
+        "T02524",
+        "T02664",
+        "T02666",
+        "T02385"
+      ],
+      "cadence_days": 0,
+      "exptime": 100,
+      "count": 3,
+      "submode": "specall"
+    },
+    {
+      "name": "TVF",
+      "centre_tile": "T00174",
+      "n_tiles": 7,
+      "cadence_days": 14,
+      "exptime": 100,
+      "count": 3,
+      "submode": "specall"
+    }
   ]
 }

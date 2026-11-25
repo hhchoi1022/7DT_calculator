@@ -215,8 +215,16 @@ def test_nights_and_plan():
     rows = phase2.schedule_rows([req], d)
     assert [(r['part'], r['parts']) for r in rows[:2]] == [(1, 2), (2, 2)] and rows[2]['parts'] == 1
     assert rows[0]['requester_note'] == 'first line continued line' and rows[0]['note'] == ''
-    noted = phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2, note='after the eclipse')
-    assert phase2.TargetSettings.from_dict(noted.as_dict()).note == 'after the eclipse'
+    noted = phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 5), count=3, epochs=2, note='after the eclipse', visits_per_night=2, gap_hours=5)
+    back = phase2.TargetSettings.from_dict(noted.as_dict())
+    assert back.note == 'after the eclipse' and back.visits_per_night == 2 and back.gap_hours == 5.0 and back.use_moon
+    dark = phase2.parse_request(SAMPLE)
+    phase2.compute_times(dark)
+    dark.project = {'sky_background': 'Dark'}
+    tdark = phase2.night_table(dark, grid, moon)
+    with_moon = phase2.make_target_plan(dark, 0, tdark, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 30), count=1, epochs=1))
+    no_moon = phase2.make_target_plan(dark, 0, tdark, phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 30), count=1, epochs=1, use_moon=False))
+    assert no_moon.n_feasible > with_moon.n_feasible and not phase2.TargetSettings.from_dict(no_moon.settings.as_dict()).use_moon
     req.project_id, req.project = '26099', {'pi': 'Kim Mi-Ryang', 'sky_background': 'Dark & Gray', 'dither_arcsec': 60}
     out = phase2.export_rows([req], d)
     assert len(out) == 2 and list(out[0]) == list(phase2.EXPORT_COLUMNS)
@@ -266,7 +274,20 @@ def test_simulation():
     assert rows[0]['epochs'] == 4 and rows[0]['p_complete'] == 1.0 and rows[0]['first_50'] and rows[0]['last_90'] >= rows[0]['last_10']
     fixed = simulate.load_fixed_programmes(grid)
     assert [f.name for f in fixed] == ['IMS', 'TVF'] and fixed[1].cadence_days == 14
-    assert 'T02385' in fixed[0].tile_ids and fixed[0].visits[fixed[0].tile_ids.index('T02385')] == 2 and fixed[0].gap_hours == 5.0 and fixed[0].n_visits == 8
+    assert 'T02385' in fixed[0].tile_ids and fixed[0].visits == [1] * 7 and fixed[0].n_visits == 7
+    # two visits per night, 5 h apart, for a target up all night: capacity 2, half the nights, simulation gives both
+    twice = {}
+    for p in phase2.make_target_plans(req, 0, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 30), count=1, epochs=6, visits_per_night=2, gap_hours=1.0)], use_moon=False):
+        twice[p.key] = p
+    tp = twice[list(twice)[0]]
+    assert tp.capacity.max() == 2 and tp.nights_needed == 3 and tp.ok
+    phase2.place_epochs(twice, 30)
+    assert tp.n_placed == 6 and 3 <= tp.placed.sum() <= 6
+    res2 = simulate.simulate(twice, grid, [], runs=5, bad_weather=0.0)
+    assert res2.completed[0] == 1.0 and res2.epochs_done[0] == 6 and (res2.epoch_nights[0, 0, :] >= 0).all()
+    nights2 = res2.epoch_nights[0, 0, :]
+    assert len(set(nights2.tolist())) == 3                                                     # two epochs per night on three nights
+    assert phase2.visits_that_fit([(0.0, 6.0)], 1.0, 3, 2.0) == 3 and phase2.visits_that_fit([(0.0, 3.5)], 1.0, 3, 2.0) == 2 and phase2.visits_that_fit([(0.0, 6.0)], 1.0, 2, 2.0, after=2.5) == 1 and phase2.visits_that_fit([(0.0, 6.0)], 1.0, 2, 2.0, after=4.5) == 0
     # a part that never fits (one night, too long an epoch) stays at zero
     never = {}
     for p in phase2.make_target_plans(req, 0, table, [phase2.TargetSettings(start=date(2026, 12, 1), end=date(2026, 12, 1), count=900, epochs=1)], use_moon=False):

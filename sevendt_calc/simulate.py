@@ -177,6 +177,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
             if not clear[r, i]:
                 continue
             free = [(0.0, float(night_len[i]))]
+            tile_last = {}                                                   # tile / target name -> start of its latest visit tonight
             for prog in fixed:
                 if prog.cadence_days and last_fixed[prog.name] is not None and i - last_fixed[prog.name] < prog.cadence_days:
                     continue
@@ -192,6 +193,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
                         if start is None:
                             break
                         prev = start
+                        tile_last[prog.tile_ids[j]] = start
                         placed += 1
                 if placed:
                     last_fixed[prog.name] = i
@@ -209,15 +211,26 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
                 cands.append((urgency, k))
             cands.sort()
             for _, k in cands:
-                start, free = _place(plans[k].intervals[i], free, plans[k].epoch_h)
-                if start is not None:
-                    e = int(plans[k].settings.epochs) - remaining[k]
+                p = plans[k]
+                name = p.target.tile_id or p.target.label
+                for _visit in range(p.settings.visits_per_night):
+                    if remaining[k] <= 0:
+                        break
+                    allowed = p.intervals[i]
+                    if p.settings.gap_hours > 0 and name in tile_last:        # not before gap_hours after the previous visit of this tile tonight
+                        floor = tile_last[name] + p.settings.gap_hours
+                        allowed = [(max(lo, floor), hi) for lo, hi in allowed if hi - max(lo, floor) > 1e-9]
+                    start, free = _place(allowed, free, p.epoch_h)
+                    if start is None:
+                        break
+                    tile_last[name] = start
+                    e = int(p.settings.epochs) - remaining[k]
                     epoch_nights[r, index[k], e] = i
                     remaining[k] -= 1
                     last[k] = i
                     done[r, index[k], i] = True
     wanted = np.array([plans[k].settings.epochs for k in keys])
-    counts = done.sum(axis=2)                                        # (runs, parts)
+    counts = (epoch_nights >= 0).sum(axis=2)                         # (runs, parts) epochs observed (several per night possible)
     first = np.where(done.any(axis=2), done.argmax(axis=2), -1)
     last_ = np.where(done.any(axis=2), n_nights - 1 - done[:, :, ::-1].argmax(axis=2), -1)
     return SimulationResult(dates=list(grid.dates), keys=keys, prob=done.mean(axis=0), completed=(counts >= wanted[None, :]).mean(axis=0),

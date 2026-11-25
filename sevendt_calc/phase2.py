@@ -706,9 +706,14 @@ class TargetSettings:
     enabled: bool = True
     cadence: int = 0               # days between consecutive epochs (0: no constraint)
     note: str = ''                 # the operator's own note for the row
+    visits_per_night: int = 1      # epochs of this row in one night (each one epoch of `count` frames)
+    gap_hours: float = 0.0         # minimum hours after the previous visit of the same target that night (own visits and fixed programmes)
+    use_moon: bool = True          # apply the project's sky-background (Moon) condition to this row
 
     def __post_init__(self):
         self.note = '' if self.note is None else str(self.note)
+        self.visits_per_night = max(int(self.visits_per_night or 1), 1)
+        self.gap_hours = max(float(self.gap_hours or 0.0), 0.0)
         self.start = as_datetime_list(self.start)
         self.end = as_datetime_list(self.end)
         if not self.start or not self.end:
@@ -746,14 +751,16 @@ class TargetSettings:
 
     def as_dict(self) -> dict:
         return {'obs_starttime': self.start_text, 'obs_endtime': self.end_text, 'count': int(self.count), 'target_epoch': int(self.epochs),
-                'cadence': int(self.cadence), 'enabled': bool(self.enabled), 'note': self.note}
+                'cadence': int(self.cadence), 'enabled': bool(self.enabled), 'note': self.note, 'visits_per_night': int(self.visits_per_night), 'gap_hours': float(self.gap_hours),
+                'use_moon': bool(self.use_moon)}
 
     @classmethod
     def from_dict(cls, d: dict) -> 'TargetSettings':
         start = d['obs_starttime'] if 'obs_starttime' in d else d['obs_startdate']          # files written before the rename
         end = d['obs_endtime'] if 'obs_endtime' in d else d['obs_enddate']
         return cls(start=start, end=end, count=int(d.get('count', 1)), epochs=int(d.get('target_epoch', 1)), enabled=bool(d.get('enabled', True)),
-                   cadence=int(d.get('cadence', 0) or 0), note=str(d.get('note', '') or ''))
+                   cadence=int(d.get('cadence', 0) or 0), note=str(d.get('note', '') or ''), visits_per_night=int(d.get('visits_per_night', 1) or 1),
+                   gap_hours=float(d.get('gap_hours', 0) or 0), use_moon=bool(d.get('use_moon', True)))
 
     @staticmethod
     def _bound(value: datetime, grid: vis.SeasonGrid, is_end: bool) -> float:
@@ -816,13 +823,14 @@ class TargetPlan:
     j: int
     settings: TargetSettings
     epoch_h: float                 # hours of one epoch, overhead included
-    feasible: np.ndarray           # (nights,) the epoch fits into the target's time above the limit that night
-    placed: np.ndarray             # (nights,) nights on which an epoch is assumed (spread evenly over the feasible nights)
+    feasible: np.ndarray           # (nights,) at least one epoch fits into the target's time above the limit that night
+    placed: np.ndarray             # (nights,) nights on which epochs are assumed (spread evenly over the feasible nights)
     intervals: list                # per night: the target's intervals (hours after twilight) usable for the epoch
     issues: list                   # blocking: the plan cannot be carried out as entered
     warnings: list = field(default_factory=list)   # informational (frames differ from the request)
     part: int = 1                  # part number within the target set (1 unless the operator split the set)
     in_range: np.ndarray = None    # (nights,) the night overlaps obs_starttime .. obs_endtime
+    capacity: np.ndarray = None    # (nights,) epochs that fit that night (up to visits_per_night, gap_hours apart)
 
     @property
     def target(self) -> RequestTarget:
@@ -850,7 +858,14 @@ class TargetPlan:
 
     @property
     def n_placed(self) -> int:
-        return int(self.placed.sum())
+        """Epochs assumed: the capacity of the placed nights, capped at the epochs wanted."""
+        if self.capacity is None:
+            return int(self.placed.sum())
+        return int(min(self.capacity[self.placed].sum(), self.settings.epochs))
+
+    @property
+    def nights_needed(self) -> int:
+        return int(math.ceil(self.settings.epochs / max(self.settings.visits_per_night, 1)))
 
     @property
     def ok(self) -> bool:
@@ -881,7 +896,7 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
     for lo_jd, hi_jd in bounds:
         in_range |= (grid.end_jd > lo_jd) & (grid.start_jd < hi_jd)
     usable = in_range.copy()
-    if use_moon:
+    if use_moon and settings.use_moon:
         usable &= table.moon_ok
     intervals = []
     for i in range(n):
@@ -895,7 +910,8 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
             clipped += [(max(a, lo_h), min(b, hi_h)) for a, b in ups if min(b, hi_h) - max(a, lo_h) > 1e-9]
         intervals.append(merge_intervals(clipped))
     longest = np.array([max((hi - lo for lo, hi in iv), default=0.0) for iv in intervals])
-    feasible = (longest >= epoch_h - 1e-9) & (longest > 0) if epoch_h > 0 else np.zeros(n, bool)
+    capacity = np.array([visits_that_fit(iv, epoch_h, settings.visits_per_night, settings.gap_hours) if epoch_h > 0 else 0 for iv in intervals], int)
+    feasible = capacity >= 1
     placed = np.zeros(n, bool)
     if settings.enabled:
         if settings.inverted():
@@ -907,9 +923,15 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
         if check_frames and t.nframes is not None and settings.count * settings.epochs != t.nframes:
             warnings.append(f'{settings.count * settings.epochs} frames planned, {t.nframes} requested')
         idx = np.flatnonzero(feasible)
-        if idx.size >= settings.epochs >= 1:
-            for chunk in np.array_split(idx, settings.epochs):                 # provisional: the middle night of each part of the range
+        nights_needed = int(math.ceil(settings.epochs / max(settings.visits_per_night, 1)))
+        if idx.size >= nights_needed >= 1 and capacity[idx].sum() >= settings.epochs:
+            for chunk in np.array_split(idx, nights_needed):                   # provisional: the middle night of each part of the range
                 placed[chunk[len(chunk) // 2]] = True
+            if capacity[placed].sum() < settings.epochs:                       # some chosen nights hold fewer visits than hoped: add nights
+                for i in idx:
+                    if capacity[placed].sum() >= settings.epochs:
+                        break
+                    placed[i] = True
         else:
             placed[idx] = True
             if epoch_h > 0 and settings.count >= 1 and settings.epochs >= 1 and t.has_coordinates:
@@ -917,9 +939,27 @@ def make_target_plan(req: RequestFile, j: int, table: NightTable, settings: Targ
                 if idx.size == 0:
                     issues.append(f'no night in the range with {epoch_h:.2f} h of the target above {MIN_ALT_TEXT} (longest {best:.2f} h)')
                 else:
-                    issues.append(f'only {idx.size} of {settings.epochs} epochs fit (nights with {epoch_h:.2f} h of the target up)')
+                    issues.append(f'only {int(capacity[idx].sum())} of {settings.epochs} epochs fit (nights with {epoch_h:.2f} h of the target up'
+                                  + (f', {settings.visits_per_night} visits {settings.gap_hours:g} h apart' if settings.visits_per_night > 1 else '') + ')')
     return TargetPlan(key=part_key(target_key(req, t), part), req=req, j=j, settings=settings, part=part, epoch_h=epoch_h, feasible=feasible, placed=placed,
-                      intervals=intervals, issues=issues, warnings=warnings, in_range=in_range)
+                      intervals=intervals, issues=issues, warnings=warnings, in_range=in_range, capacity=capacity)
+
+
+def visits_that_fit(intervals: list, epoch_h: float, visits: int = 1, gap_hours: float = 0.0, after: float | None = None) -> int:
+    """How many visits of `epoch_h` fit into the intervals (hours after twilight), each starting at least `gap_hours` after the previous one (and after `after`)."""
+    n, prev = 0, after
+    while n < visits:
+        start = None
+        for lo, hi in sorted(intervals):
+            lo = lo if prev is None else max(lo, prev + gap_hours)
+            if hi - lo >= epoch_h - 1e-9:
+                start = lo
+                break
+        if start is None:
+            break
+        prev = start
+        n += 1
+    return n
 
 
 def make_target_plans(req: RequestFile, j: int, table: NightTable, parts: list, use_moon: bool = True, oh_config: oh.OverheadConfig | None = None) -> list:
@@ -961,15 +1001,20 @@ def place_epochs(plans: dict, n_nights: int) -> np.ndarray:
         idx = np.flatnonzero(p.feasible)
         if idx.size == 0:
             continue
-        if p.settings.cadence > 0 and p.settings.epochs > 1:
-            chosen = _place_with_cadence(idx, p.settings.epochs, p.settings.cadence, load)
-            if len(chosen) < p.settings.epochs:
-                p.issues.append(f'only {len(chosen)} of {p.settings.epochs} epochs fit with a cadence of {p.settings.cadence} d')
+        nights_needed = p.nights_needed
+        if p.settings.cadence > 0 and nights_needed > 1:
+            chosen = _place_with_cadence(idx, nights_needed, p.settings.cadence, load)
+            if len(chosen) < nights_needed:
+                p.issues.append(f'only {int(p.capacity[chosen].sum()) if chosen else 0} of {p.settings.epochs} epochs fit with a cadence of {p.settings.cadence} d')
         else:
-            chosen = [min(chunk, key=lambda i: (round(load[i], 3), abs(i - chunk[len(chunk) // 2]))) for chunk in np.array_split(idx, min(p.settings.epochs, idx.size))]
+            chosen = [min(chunk, key=lambda i: (round(load[i], 3), abs(i - chunk[len(chunk) // 2]))) for chunk in np.array_split(idx, min(nights_needed, idx.size))]
+            for i in idx:                                                   # more nights when the chosen ones hold fewer visits than hoped
+                if p.capacity[chosen].sum() >= p.settings.epochs or i in chosen:
+                    continue
+                chosen.append(int(i))
         for i in chosen:
             p.placed[i] = True
-            load[i] += p.epoch_h
+            load[i] += p.epoch_h * min(p.capacity[i], p.settings.visits_per_night)
     return load
 
 
@@ -1049,8 +1094,8 @@ def pack_night(jobs: list) -> dict:
 
 
 def night_jobs(plans: dict, i: int) -> list:
-    """The epochs assumed on night i: [(target key, hours, intervals)]."""
-    return [(k, p.epoch_h, p.intervals[i]) for k, p in plans.items() if p.placed[i]]
+    """The epochs assumed on night i: [(target key, hours, intervals)]; a row visited several times that night asks for all its visits' hours."""
+    return [(k, p.epoch_h * (int(p.capacity[i]) if p.capacity is not None and p.settings.visits_per_night > 1 else 1), p.intervals[i]) for k, p in plans.items() if p.placed[i]]
 
 
 def night_conflicts(plans: dict, dates: list) -> list:
@@ -1166,6 +1211,8 @@ def schedule_rows(requests: list, plans: dict) -> list:
                              'mode': t.mode_text, 'exptime': t.exptime, 'requested_frames': t.nframes, 'requested_h': round(t.total_s / 3600.0, 2),
                              'obs_starttime': s.start_text if s and s.enabled else '', 'obs_endtime': s.end_text if s and s.enabled else '',
                              'count': s.count if s and s.enabled else None, 'target_epoch': s.epochs if s and s.enabled else None, 'cadence': s.cadence if s and s.enabled else None,
+                             'visits_per_night': s.visits_per_night if s and s.enabled else None, 'gap_hours': s.gap_hours if s and s.enabled else None,
+                             'moon_condition': (req.sky_background if s.use_moon else 'ignored') if s and s.enabled else None,
                              'epoch_h': round(p.epoch_h, 2) if p else None, 'planned_h': round(p.planned_h, 2) if p and s.enabled else None,
                              'dither_arcsec': req.dither_arcsec, 'sky_background': req.sky_background, 'status': p.status if p else '',
                              'obs_window_start': t.window_starts_text, 'obs_window_end': t.window_ends_text, 'note': s.note if s else '', 'requester_note': t.note})

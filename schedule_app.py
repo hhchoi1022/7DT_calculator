@@ -26,7 +26,7 @@ from ui_common import feedback_note, live_config, site_key
 
 st.set_page_config(page_title='7DT Scheduling', page_icon='🗓️', layout='wide')
 
-EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'scheduled', 'Note']
+EDIT_COLUMNS = ['obs_starttime', 'obs_endtime', 'count', 'target_epoch', 'cadence', 'visits_per_night', 'gap_hours', 'moon', 'scheduled', 'Note']
 DATE_PATTERN = r'^\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?(\s*,\s*\d{4}-\d{1,2}-\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?)*\s*$'
 RED, YELLOW = 'background-color: #ffb3b3', 'background-color: #fff3b0'
 
@@ -48,7 +48,8 @@ def base_frame(requests: list, settings: dict) -> pd.DataFrame:
                              'Exptime (s)': t.exptime, 'Requested frames': t.nframes, 'Requested (h)': round(t.total_s / 3600.0, 2), 'dither_arcsec': req.dither_arcsec,
                              'obs_window_start': t.window_starts_text.replace('T', ' '), 'obs_window_end': t.window_ends_text.replace('T', ' '), 'Requester_note': t.note,
                              'obs_starttime': s.start_text.replace('T', ' '), 'obs_endtime': s.end_text.replace('T', ' '),
-                             'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'scheduled': bool(s.enabled), 'Note': s.note})
+                             'count': int(s.count), 'target_epoch': int(s.epochs), 'cadence': int(s.cadence), 'visits_per_night': int(s.visits_per_night),
+                             'gap_hours': float(s.gap_hours), 'moon': bool(s.use_moon), 'scheduled': bool(s.enabled), 'Note': s.note})
     return pd.DataFrame(rows)
 
 
@@ -74,15 +75,19 @@ def settings_from_frame(df: pd.DataFrame, previous: dict) -> dict:
             count = int(r['count']) if not pd.isna(r['count']) else old.count
             epochs = int(r['target_epoch']) if not pd.isna(r['target_epoch']) else old.epochs
             cadence = int(r['cadence']) if not pd.isna(r['cadence']) else old.cadence
+            visits = int(r['visits_per_night']) if not pd.isna(r['visits_per_night']) else old.visits_per_night
+            gap = float(r['gap_hours']) if not pd.isna(r['gap_hours']) else old.gap_hours
         except (TypeError, ValueError):
-            count, epochs, cadence = old.count, old.epochs, old.cadence
+            count, epochs, cadence, visits, gap = old.count, old.epochs, old.cadence, old.visits_per_night, old.gap_hours
         note = '' if r['Note'] is None or (isinstance(r['Note'], float) and np.isnan(r['Note'])) else str(r['Note'])
         try:
             out[tkey].append(phase2.TargetSettings(start=_as_datetime_list(r['obs_starttime'], old.start), end=_as_datetime_list(r['obs_endtime'], old.end), count=max(count, 1),
-                                                   epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note))
+                                                   epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note, visits_per_night=max(visits, 1), gap_hours=max(gap, 0.0),
+                                                   use_moon=bool(r['moon'])))
         except ValueError as exc:                                      # e.g. two start times but one end time: keep the previous ranges and say so
             bad[f'{tkey}#{n + 1}'] = str(exc)
-            out[tkey].append(phase2.TargetSettings(start=old.start, end=old.end, count=max(count, 1), epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note))
+            out[tkey].append(phase2.TargetSettings(start=old.start, end=old.end, count=max(count, 1), epochs=max(epochs, 1), enabled=bool(r['scheduled']), cadence=max(cadence, 0), note=note,
+                                                   visits_per_night=max(visits, 1), gap_hours=max(gap, 0.0), use_moon=bool(r['moon'])))
     st.session_state['sch_bad_rows'] = bad
     return {k: v or previous[k] for k, v in out.items()}
 
@@ -119,12 +124,13 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     ss = st.session_state
     st.subheader('Targets and plan')
     c1, c2, c3 = st.columns([1.3, 1, 3])
-    use_moon = c1.checkbox('Apply the Moon condition', value=True, key='sch_use_moon', help='Only nights whose Moon illumination suits the project\'s sky background count (Dark ≤ 0.2, Gray 0.2–0.8, Bright ≥ 0.8).')
+    use_moon = c1.checkbox('Apply the Moon condition', value=True, key='sch_use_moon', help='Only nights whose Moon illumination suits the project\'s sky background count (Dark ≤ 0.2, Gray 0.2–0.8, Bright ≥ 0.8); the moon column switches it off per row.')
     if c2.button('Reset to defaults', key='sch_reset', help='Requested window span; all frames in one epoch when one visit fits into a night of the span, otherwise split into epochs that fit.'):
         ss['sch_tsettings'] = {phase2.target_key(req, t): [phase2.default_target_settings(req, t, tables[req.key], j, use_moon)] for req in requests for j, t in enumerate(req.targets)}
         remount_editor(requests)
     c3.caption('Edit obs_starttime / obs_endtime (UTC, typed as YYYY-MM-DD for that whole local night or YYYY-MM-DD HH:MM to cut exactly there; several ranges comma-separated, '
-               'the n-th start with the n-th end), count (frames per filter in one epoch), target_epoch and cadence (days between epochs, 0 = free). '
+               'the n-th start with the n-th end), count (frames per filter in one epoch), target_epoch (total epochs), cadence (days between nights, 0 = free), '
+               'visits/night and gap (several epochs in one night, at least gap hours after the previous visit of the same tile, fixed programmes included), moon (off = ignore the Moon condition for this row). '
                'The range you enter is the master (the requested OBS_WINDOW is shown for reference only; timed windows still fix the time of night). '
                'One epoch = count frames in every filter of the mode, overheads included; the plan needs target_epoch nights in the range on which the target is up for that long.')
     split_controls(requests)
@@ -142,8 +148,12 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
         'count': st.column_config.NumberColumn('count', min_value=1, max_value=100000, step=1, required=True, help='Frames per filter in one epoch'),
         'target_epoch': st.column_config.NumberColumn('target_epoch', min_value=1, max_value=1000, step=1, required=True, help='Number of epochs (visits)'),
         'cadence': st.column_config.NumberColumn('cadence (d)', min_value=0, max_value=365, step=1, required=True, help='Days between consecutive epochs; 0 = no constraint. Taken from "cadence=7d" in the NOTE when present.'),
+        'visits_per_night': st.column_config.NumberColumn('visits/night', min_value=1, max_value=20, step=1, required=True, help='Epochs of this row in one night (1 normally).'),
+        'gap_hours': st.column_config.NumberColumn('gap (h)', min_value=0.0, max_value=12.0, step=0.5, format='%.1f', required=True,
+                                                   help='Minimum hours after the previous visit of the same tile that night, by this row or by a fixed programme (e.g. IMS); 0 = none.'),
         'Total exptime (h)': st.column_config.NumberColumn('Total exptime (h)', format='%.2f', help='exptime × count × target_epoch × orders of the mode (specall: 2), updated as you edit'),
         'With overhead (h)': st.column_config.NumberColumn('With overhead (h)', format='%.2f', help='target_epoch × (one epoch of count frames with the overhead model), updated as you edit'),
+        'moon': st.column_config.CheckboxColumn('moon', help='Apply the project\'s sky-background (Moon) condition to this row; off = any Moon (e.g. nightly monitoring)'),
         'scheduled': st.column_config.CheckboxColumn('scheduled', help='Off: left out of the plan and of the conflict check'),
         'Note': st.column_config.TextColumn('Note', width='medium', help='Your own note for this row (saved with the schedule)'),
         'Requester_note': st.column_config.TextColumn('Requester_note', help='The NOTE the PI wrote in the request file'),
@@ -163,7 +173,7 @@ def plan_section(requests: list, tables: dict) -> tuple[dict, bool]:
     disabled = [c for c in base.columns if c not in EDIT_COLUMNS]
     first = ['Project', 'Target', 'Part'] + EDIT_COLUMNS + ['Total exptime (h)', 'With overhead (h)']
     order = first + [c for c in base.columns if c not in first and c != 'key']
-    st.markdown('**Plan table** (one row per requested target set) — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, scheduled, Note) '
+    st.markdown('**Plan table** (one row per requested target set) — type into the cells with the pencil icon (obs_starttime, obs_endtime, count, target_epoch, cadence, visits/night, gap, scheduled, Note) '
                 'and press Enter; Total exptime = exptime × count × target_epoch × orders and With overhead follow your edits; the other columns (Requester_note = the PI\'s NOTE) repeat the request and cannot be edited.')
     edited = st.data_editor(base, key=editor_key, column_config=column_config, disabled=disabled, hide_index=True,
                             width='stretch', height=min(60 + 36 * len(base), 560), column_order=order)
