@@ -141,7 +141,7 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
     at transit, yellow: Moon unsuitable for its project), its assumed epochs as diamonds, its entered range
     as a red centre line and its requested OBS_WINDOW as a thin blue line above it.
     """
-    strip_h = 64 * len(items) + 30
+    strip_h = 26 * len(items) + 30
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[330, strip_h])
     if not items:
         return fig
@@ -176,86 +176,64 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
         fig.add_trace(go.Scatter(x=dates, y=first_table.moon, mode='lines', line=dict(color='#999', width=1, dash='dot'), name='Moon illumination',
                                  hovertemplate='Moon %{y:.0%}<extra></extra>'), row=1, col=1)
         fig.data[-1].update(yaxis='y3')
-    # the strips: one row per chosen target; every cell is the whole night (bottom = evening twilight, top = morning twilight)
+    # the strips: one row per chosen target
     moon_shown = show_moon
-    n_nights_ = len(dates)
-    night_h = items[0][1].night_hours
-    ms_day = 86400000
-    labels = []
-    bars = {'moon': ([], [], [], []), 'up': ([], [], [], []), 'transit': ([], [], [], []), 'sched': ([], [], [], []), 'req': ([], [], [], [])}
-    diamonds = ([], [], [])
-    shapes = []
-
-    def add(kind, x, k, h0, h1, text):
-        xs, bases, heights, texts = bars[kind]
-        y_lo = k + 0.5 - h1 / night_h[x]           # reversed axis: larger y is lower; evening at k + 0.5
-        xs.append(dates[x]); bases.append(y_lo); heights.append((h1 - h0) / night_h[x]); texts.append(text)
-
-    for k, (req, table, j) in enumerate(items):
+    labels, cats, hover, ranges, requested, epoch_rows, epoch_texts = [], [], [], [], [], [], []
+    for req, table, j in items:
         t = req.targets[j]
         label = f'{req.key} {t.display}'
-        labels.append(label)
         parts = [p for p in phase2.plans_of(plans, req, j) if p.settings.enabled]
-        placed = np.zeros(n_nights_, bool)
+        rng, placed = np.zeros(n_nights, bool), np.zeros(n_nights, bool)
         for p in parts:
+            rng |= p.in_range
             placed |= p.placed
-            planned |= p.in_range
+        c = np.zeros(n_nights, int)
+        if mode == 'alt':
+            c[table.max_alt[:, j] >= MIN_ALT] = CAT_INDEX['obs']
+            c[table.transit[:, j] & (table.max_alt[:, j] >= MIN_ALT)] = CAT_INDEX['good']
+        else:
+            c[table.hours[:, j] > 0] = CAT_INDEX['obs']
+            c[table.hours[:, j] >= phase2.GOOD_HOURS] = CAT_INDEX['good']
+        if moon_shown:
+            c[~table.moon_ok] = CAT_INDEX['moon']
+        labels.append(label)
+        cats.append(c)
+        ranges.append(rng)
+        requested.append(table.requested[:, j])
+        epoch_rows.append(placed)
         sched = scheduled_texts(parts, grid)
-        for i in range(n_nights_):
-            d = table.dates[i]
-            if moon_shown and not table.moon_ok[i]:
-                add('moon', i, k, 0.0, night_h[i], f'{label} {d:%Y-%m-%d}: Moon {table.moon[i]:.0%}, unsuitable for the sky background')
-            for s_, e_ in zip(table.starts[i, j], table.ends[i, j]):
-                if not np.isnan(s_):
-                    add('up', i, k, float(s_), float(e_), f'{label} {d:%Y-%m-%d}: above {MIN_ALT:g}° {utc_text(grid, i, s_)}–{utc_text(grid, i, e_)} UT ({e_ - s_:.2f} h), max alt {table.max_alt[i, j]:.1f}°')
-            if table.transit[i, j] and table.max_alt[i, j] >= MIN_ALT:
-                a_ = max(0.0, float(table.at_hours[i, j]) - 0.25); b_ = min(float(night_h[i]), float(table.at_hours[i, j]) + 0.25)
-                add('transit', i, k, a_, b_, f'{label} {d:%Y-%m-%d}: transit {utc_text(grid, i, table.at_hours[i, j])} UT')
-            if table.requested[i, j]:
-                wins = [(float(ws), float(we)) for ws, we in zip(table.win_starts[i, j], table.win_ends[i, j]) if not np.isnan(ws)]
-                for ws, we in (wins or [(0.0, float(night_h[i]))]):
-                    add('req', i, k, ws, we, f'{label} {d:%Y-%m-%d}: requested OBS_WINDOW ' + (f'{utc_text(grid, i, ws)}–{utc_text(grid, i, we)} UT' if wins else '(whole night)'))
-        for p in parts:
-            for lo, hi in p.settings.bounds_jd(grid):
-                first = max(0, int(np.searchsorted(grid.end_jd, lo, side='right')) - 1)
-                for i in range(first, n_nights_):
-                    if grid.start_jd[i] >= hi:
-                        break
-                    a_, b_ = max(lo, grid.start_jd[i]), min(hi, grid.end_jd[i])
-                    if b_ - a_ > 1e-9:
-                        h0, h1 = (a_ - grid.start_jd[i]) * 24.0, (b_ - grid.start_jd[i]) * 24.0
-                        add('sched', i, k, h0, h1, f'{label} {table.dates[i]:%Y-%m-%d}: OBS_WINDOW (scheduled) {sched[i]}')
-        for i in np.flatnonzero(placed):
-            parts_here = [p for p in parts if p.placed[i]]
-            diamonds[0].append(dates[i]); diamonds[1].append(k)
-            diamonds[2].append(f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts_here) + ')')
-    style = {'moon': dict(color=phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][2], width=ms_day, offset=-ms_day / 2),
-             'up': dict(color=phase2.STRIP_CATEGORIES[CAT_INDEX['obs']][2], width=ms_day, offset=-ms_day / 2),
-             'transit': dict(color=phase2.STRIP_CATEGORIES[CAT_INDEX['good']][2], width=ms_day, offset=-ms_day / 2),
-             'sched': dict(color=WINDOW_COLOR, width=ms_day * 0.45, offset=-ms_day * 0.225),
-             'req': dict(color='#1f77b4', width=ms_day * 0.18, offset=-ms_day * 0.5)}
-    names = {'moon': 'Moon unsuitable', 'up': f'above {MIN_ALT:g}°', 'transit': 'transit (± 15 min)', 'sched': range_label, 'req': 'OBS_WINDOW (requested)'}
-    for kind in ('moon', 'up', 'transit', 'req', 'sched'):
-        xs, bases, heights, texts = bars[kind]
-        st_ = style[kind]
-        fig.add_trace(go.Bar(x=xs, y=heights, base=bases, width=st_['width'], offset=st_['offset'], marker=dict(color=st_['color'], line=dict(width=0)), name=names[kind],
-                             hovertext=texts, hoverinfo='text', showlegend=True, legendrank=1100 if kind != 'sched' else 1201), row=2, col=1)
-    fig.add_trace(go.Scatter(x=diamonds[0], y=diamonds[1], mode='markers', marker=dict(color=WINDOW_COLOR, size=8, symbol='diamond', line=dict(color='white', width=1)),
-                             name=epoch_label, hovertext=diamonds[2], hoverinfo='text', legendrank=1200), row=2, col=1)
+        hover.append([f'{label} {d:%Y-%m-%d}: {h:.2f} h observable, max alt {a:.1f}°' + (', requested OBS_WINDOW' if w else '') + (f', scheduled {sc}' if sc else '')
+                      + f', Moon {m:.0%}' + ('' if ok else ' (unsuitable)')
+                      for d, h, a, w, sc, m, ok in zip(table.dates, table.hours[:, j], table.max_alt[:, j], table.requested[:, j], sched, table.moon, table.moon_ok)])
+        epoch_texts.append([f'{label}: {epoch_label} on {table.dates[i]:%Y-%m-%d} (' + ', '.join(f'{p.epoch_h:.2f} h' + (f' part {p.part}' if len(parts) > 1 else '') for p in parts if p.placed[i]) + ')'
+                            for i in range(n_nights)])
+    fig.add_trace(heatmap(dates, labels, np.array(cats), hover), row=2, col=1)
     half = timedelta(hours=12)
+    shapes = []
+    for k, (rng, req_mask) in enumerate(zip(ranges, requested)):
+        for a, b in runs(rng):
+            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k, y1=k, line=dict(color=WINDOW_COLOR, width=4), layer='above'))
+        for a, b in runs(req_mask):
+            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k + 0.36, y1=k + 0.36, line=dict(color='#1f77b4', width=2), layer='above'))
     for a, b in runs(planned):
-        if b - a < 2:                                   # single eclipse nights and the like are in the strip; outlining each would clutter the curves
-            continue
         shapes.append(dict(type='rect', xref='x', yref='paper', x0=dates[a] - half, x1=dates[b] + half, y0=1 - 330 / (330 + strip_h), y1=1, fillcolor='rgba(0,0,0,0)',
                            line=dict(color=WINDOW_COLOR, width=2, dash='dot'), layer='above'))
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
     shapes.append(dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash')))
+    legend = [('max altitude ≥ 30°' if mode == 'alt' else 'observable (> 0 h)', phase2.STRIP_CATEGORIES[CAT_INDEX['obs']][2]),
+              ('transit during the night' if mode == 'alt' else f'≥ {phase2.GOOD_HOURS:g} h observable', phase2.STRIP_CATEGORIES[CAT_INDEX['good']][2])]
+    if moon_shown and any(not tb.moon_ok.all() for _, tb, _ in items):
+        legend.append((phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][1], phase2.STRIP_CATEGORIES[CAT_INDEX['moon']][2]))
+    for label, color in legend:                    # the strip legend follows the y axis: the same greens mean altitude / transit or hours
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=12, symbol='square', color=color, line=dict(color='#999', width=0.5)), name=label, hoverinfo='skip'), row=2, col=1)
+    fig.add_trace(dot_trace(dates, labels, epoch_rows, epoch_label, epoch_texts), row=2, col=1)      # legend: the diamonds right before the scheduled range
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=WINDOW_COLOR, width=4), name=range_label, hoverinfo='skip'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#1f77b4', width=2), name='OBS_WINDOW (requested)', hoverinfo='skip'), row=2, col=1)
     x0, x1 = datetime.combine(phase2.PROGRAM_START, datetime.min.time()) - timedelta(days=1), datetime.combine(phase2.PROGRAM_END, datetime.min.time()) + timedelta(days=1)
     fig.update_layout(height=330 + strip_h + 100, margin=dict(l=10, r=10, t=10, b=10), shapes=shapes, hovermode='closest',
                       yaxis=dict(title='max altitude (°)' if mode == 'alt' else 'observable hours (h)', rangemode='tozero'),
                       yaxis3=dict(overlaying='y', side='right', range=[0, 1], tickformat='.0%', showgrid=False, title='Moon'),
-                      yaxis2=dict(range=[len(items) - 0.5, -0.5], tickvals=list(range(len(items))), ticktext=labels, tickfont=dict(size=10), showgrid=False, zeroline=False),
-                      xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]), barmode='overlay', bargap=0,
+                      yaxis2=dict(type='category', tickfont=dict(size=10), autorange='reversed'), xaxis=dict(type='date', range=[x0, x1]), xaxis2=dict(type='date', range=[x0, x1]),
                       legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, font=dict(size=11)))
     return fig
 

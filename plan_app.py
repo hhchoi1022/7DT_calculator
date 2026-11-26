@@ -94,9 +94,9 @@ def visibility_block(req: phase2.RequestFile, tables: dict, plans: dict, grid: v
     items = [(req, tables[req.key], j) for j in chosen]
     st.plotly_chart(visibility_figure(items, grid, 'alt' if mode.startswith('Max') else 'hours', show_moon, plans, epoch_label='expected observation', range_label='OBS_WINDOW (scheduled)'),
                     width='stretch', key=f'{prefix}_vis_fig', config={'displaylogo': False})
-    st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the expected observation nights; dotted red = OBS_WINDOW (scheduled) spanning several nights. '
-               'Bottom: one row per target, every cell a whole night (bottom = evening twilight, top = morning twilight): light green = above 30°, dark green = transit (± 15 min), '
-               'yellow = Moon unsuitable for your sky background, red = OBS_WINDOW (scheduled) at its time of night, thin blue = the OBS_WINDOW you requested; hover for the UT times.')
+    st.caption(f'Top: each target per night; dashed grey line at {MIN_ALT:g}° / {phase2.GOOD_HOURS:g} h; red diamonds = the expected observation nights; dotted red = OBS_WINDOW (scheduled). '
+               'Bottom: one bar per target: greens = observable (light > 0 h, dark = at transit / ≥ 3 h), yellow = Moon unsuitable for your sky background; '
+               'red line = the nights of OBS_WINDOW (scheduled); when it covers only part of a night, the UT times are in the hover; thin blue line = the OBS_WINDOW you requested.')
 
 
 def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: str = 'alt') -> go.Figure:
