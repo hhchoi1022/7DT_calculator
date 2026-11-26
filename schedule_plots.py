@@ -529,3 +529,39 @@ def read_operator_note(folder) -> str:
         return path.read_text(encoding='utf-8').strip() if path.is_file() else ''
     except OSError:
         return ''
+
+
+PROGRAM_NOTES_FILE = 'program_notes.json'
+
+
+def read_program_notes(folder) -> dict:
+    """Project ID -> the operator's note on the whole programme (shown to that PI on the schedule page)."""
+    import json
+    from pathlib import Path
+    path = Path(folder) / PROGRAM_NOTES_FILE
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if not str(k).startswith('_') and str(v).strip()}
+
+
+def save_program_note(folder, project_id: str, text: str) -> bool:
+    """Set (or clear, with empty text) the note of one programme; False when the folder is not writable."""
+    import json
+    import os
+    from pathlib import Path
+    path = Path(folder) / PROGRAM_NOTES_FILE
+    notes = read_program_notes(folder)
+    if text.strip():
+        notes[str(project_id)] = text.strip()
+    else:
+        notes.pop(str(project_id), None)
+    try:
+        tmp = path.with_suffix(f'.tmp{os.getpid()}')
+        tmp.write_text(json.dumps({'_description': "The operator's note on each programme, shown to its PI on the schedule page (Project ID -> markdown).", **notes},
+                                  indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False

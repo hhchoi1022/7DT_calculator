@@ -88,3 +88,12 @@ def test_viewer_project_and_admin():
             headers2 = [h.value for h in at2.subheader]
             assert not at2.exception and 'All programmes' not in headers2 and 'Your nights among the other programmes' in headers2
             assert any('Admin view of project' in c.value for c in at2.caption)
+
+
+def test_program_notes(tmp_path):
+    import schedule_plots as sp
+    assert sp.read_program_notes(tmp_path) == {}
+    assert sp.save_program_note(tmp_path, '26001', ' Observed first in December. ')
+    assert sp.read_program_notes(tmp_path) == {'26001': 'Observed first in December.'}
+    assert sp.save_program_note(tmp_path, '26003', 'Eclipse timings confirmed.') and len(sp.read_program_notes(tmp_path)) == 2
+    assert sp.save_program_note(tmp_path, '26001', '') and sp.read_program_notes(tmp_path) == {'26003': 'Eclipse timings confirmed.'}

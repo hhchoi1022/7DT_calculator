@@ -19,7 +19,7 @@ import streamlit as st
 
 from schedule_plots import (CAT_INDEX, MIN_ALT, SIM_BAD_WEATHER, SIM_RUNS, dot_trace, fixed_signature, heatmap, load_requests_cached, night_dates, night_figure, night_tables,
                             probability_figure, program_data, projects_figure, projects_signature, projects_table, read_operator_note, saved_plans, schedule_signature,
-                            simulated_saved, visibility_figure, warm_program_data, warm_simulation, with_expected)
+                            read_program_notes, save_program_note, simulated_saved, visibility_figure, warm_program_data, warm_simulation, with_expected)
 from sevendt_calc import keyguard, phase2, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, live_text_input, site_key
@@ -141,9 +141,39 @@ def occupancy_figure(req: phase2.RequestFile, tables: dict, plans: dict, mode: s
     return fig
 
 
-def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.SeasonGrid, prefix: str = 'pl', sim: dict | None = None) -> None:
+def program_note_block(req: phase2.RequestFile, folder: Path | None, admin: bool, prefix: str) -> None:
+    """The operator's note on this programme for its PI; with the admin key it can be edited here."""
+    if folder is None:
+        return
+    note = read_program_notes(folder).get(req.key, '')
+    if note:
+        st.info("**Note from the operator**\n\n" + note)
+    if not admin:
+        return
+    edit_key = f'{prefix}_note_edit_{req.key}'
+    if not st.session_state.get(edit_key):
+        if st.button('Edit the programme note' if note else 'Add a programme note', key=f'{prefix}_note_open_{req.key}'):
+            st.session_state[edit_key] = True
+            st.rerun()
+        return
+    text = st.text_area(f'Note on programme {req.key} (markdown; shown to its PI above the plan; empty = none)', value=note, height=120, key=f'{prefix}_note_text_{req.key}')
+    c1, c2, _ = st.columns([1, 1, 5])
+    if c1.button('Save note', type='primary', key=f'{prefix}_note_save_{req.key}'):
+        if save_program_note(folder, req.key, text):
+            st.session_state[edit_key] = False
+            st.rerun()
+        else:
+            st.error('The note could not be written (the request folder is read-only on this server); edit it on the operator\'s server.')
+    if c2.button('Cancel', key=f'{prefix}_note_cancel_{req.key}'):
+        st.session_state[edit_key] = False
+        st.rerun()
+
+
+def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.SeasonGrid, prefix: str = 'pl', sim: dict | None = None,
+                 folder: Path | None = None, admin: bool = False) -> None:
     dates = list(grid.dates)
     project_header(req, plans, dates)
+    program_note_block(req, folder, admin, prefix)
     df = plan_frame(req, plans, dates, sim['rows'] if sim else None)
     st.dataframe(df, hide_index=True, width='stretch', height=min(60 + 36 * len(df), 480),
                  column_config={'Total exptime (h)': st.column_config.NumberColumn(format='%.2f'), 'With overhead (h)': st.column_config.NumberColumn(format='%.2f'),
@@ -167,7 +197,7 @@ def project_view(req: phase2.RequestFile, tables: dict, plans: dict, grid: vis.S
     visibility_block(req, tables, plans, grid, prefix)
 
 
-def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, sim: dict | None = None) -> None:
+def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, sim: dict | None = None, folder: Path | None = None) -> None:
     st.subheader('All programmes')
     df = projects_table(requests, plans, list(grid.dates))
     st.dataframe(df, hide_index=True, width='stretch', column_config={'Allocated (h)': st.column_config.NumberColumn(format='%.1f'), 'dither_arcsec': st.column_config.NumberColumn(format='%.0f')})
@@ -181,7 +211,7 @@ def admin_view(requests: list, tables: dict, plans: dict, grid: vis.SeasonGrid, 
     keys = [r.key for r in requests]
     choice = st.selectbox('Programme', keys, format_func=lambda k: f'{k}: {next(r for r in requests if r.key == k).title[:90]}', key='pl_admin_project')
     req = next(r for r in requests if r.key == choice)
-    project_view(req, tables, plans, grid, prefix='pla', sim=sim)
+    project_view(req, tables, plans, grid, prefix='pla', sim=sim, folder=folder, admin=True)
     st.subheader('One night')
     night = st.date_input('Night to inspect (local date of the evening)', value=conflicts[0]['date'] if conflicts else phase2.PROGRAM_START,
                           min_value=phase2.PROGRAM_START, max_value=phase2.PROGRAM_END, key='pl_night')
@@ -281,7 +311,7 @@ def main():
     grid = data['grid']
     pid_norm = trigger.safe_project_id(pid)
     if is_admin and not pid_norm:                   # admin without a Project ID: everything; with one: exactly what that PI sees
-        admin_view(requests, tables, plans, grid, sim)
+        admin_view(requests, tables, plans, grid, sim, folder)
         return
     if is_admin:
         st.caption(f'Admin view of project {pid_norm}: this is what its PI sees.')
@@ -289,7 +319,7 @@ def main():
     if req is None:
         st.warning(f'No Phase-2 request of project {pid_norm} is registered yet.')
         return
-    project_view(req, tables, plans, grid, sim=sim)
+    project_view(req, tables, plans, grid, sim=sim, folder=folder, admin=is_admin)
     st.subheader('Your nights among the other programmes')
     mode = 'alt' if str(st.session_state.get('pl_yaxis', 'Max')).startswith('Max') else 'hours'
     st.plotly_chart(occupancy_figure(req, tables, plans, mode), width='stretch', key='pl_occ_fig', config={'displaylogo': False})
