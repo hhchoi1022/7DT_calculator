@@ -19,7 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from schedule_plots import (MIN_ALT, OPERATOR_NOTE_FILE, WINDOW_COLOR, load_requests_cached, night_figure, night_tables, program_data, projects_figure, projects_signature,
-                            projects_table, read_operator_note, visibility_figure, warm_program_data, with_expected)
+                            projects_table, read_operator_note, run_simulation, save_simulation_cache, schedule_signature, simulation_fingerprint, visibility_figure,
+                            warm_program_data, with_expected)
 from sevendt_calc import phase2, sheets, simulate, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, site_key
@@ -373,7 +374,7 @@ def operator_note_section(folder: Path) -> None:
         c2.caption(f'Stored as {folder / OPERATOR_NOTE_FILE}; an empty note hides the box.')
 
 
-def export_section(requests: list, plans: dict, folder: Path) -> None:
+def export_section(requests: list, plans: dict, folder: Path, sim_args: tuple | None = None) -> None:
     ss = st.session_state
     st.subheader('Save and export')
     c1, c2, c3, c4 = st.columns(4)
@@ -382,6 +383,13 @@ def export_section(requests: list, plans: dict, folder: Path) -> None:
     if c1.button('Save schedule', type='primary', key='sch_save', help=f'Writes {folder / phase2.SCHEDULE_FILE}; the previous file is kept in {folder / phase2.BACKUP_DIR}'):
         path = phase2.save_schedule(folder, ss['sch_tsettings'])
         st.caption(f'Saved to {path} (previous versions in {folder / phase2.BACKUP_DIR})')
+        if sim_args is not None:                         # precompute the simulation the schedule page shows, so PIs do not wait for it
+            signature, projects_sig, key, sun_alt = sim_args
+            with st.spinner('Simulating the saved schedule for the schedule page...'):
+                fp = simulation_fingerprint(str(folder), key, sun_alt)
+                sim = run_simulation(str(folder), signature, projects_sig, schedule_signature(str(folder)), key, sun_alt)
+                ok = save_simulation_cache(str(folder), fp, sim)
+            st.caption('Simulation stored for the schedule page.' if ok else 'The simulation could not be stored; the schedule page will compute it on its first visit.')
         changed = {}
     elif changed:
         c1.caption(f'{len(changed)} target set(s) changed since the last save.')
@@ -451,7 +459,7 @@ def main():
     visibility_section(requests, tables, plans_fig, grid, req)
     all_projects_section(requests, tables, plans_fig, grid)
     simulation_section(plans, grid, key, sun_alt)
-    export_section(requests, plans, folder)
+    export_section(requests, plans, folder, (signature, projects_sig, key, sun_alt))
     observation_list_section(requests, plans, folder)
 
 

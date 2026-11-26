@@ -400,15 +400,95 @@ def fixed_signature() -> tuple:
     return (str(p), p.stat().st_mtime_ns) if p.is_file() else (str(p), 0)
 
 
-@st.cache_resource(show_spinner=False)
-def simulated_saved(folder: str, signature: tuple, projects_sig: tuple, schedule_sig: tuple, key: tuple, sun_alt: float, fixed_sig: tuple) -> dict:
-    """The Monte-Carlo scheduling of the saved schedule (SIM_RUNS runs, SIM_BAD_WEATHER of the nights lost), once per change of the schedule file."""
+SIM_CACHE_FILE = 'simulation_cache.pkl'
+
+
+def simulation_fingerprint(folder: str, key: tuple, sun_alt: float) -> str:
+    """Hash of everything the simulation depends on (request files, saved schedule, projects, fixed programmes, the code, the settings)."""
+    import hashlib
+    from pathlib import Path
+    f = Path(folder)
+    h = hashlib.sha256()
+    files = sorted(f.glob('*.txt')) + [f / phase2.SCHEDULE_FILE, f / phase2.MAPPING_FILE, Path(trigger.PROJECTS_JSON),
+                                       Path(trigger.PROJECTS_JSON).parent / 'fixed_programmes.json', Path(simulate.__file__), Path(phase2.__file__)]
+    for p in files:
+        if p.is_file():
+            h.update(p.name.encode())
+            h.update(p.read_bytes())
+    h.update(repr((key, round(float(sun_alt), 3), SIM_RUNS, SIM_BAD_WEATHER, SIM_SEED, phase2.PROGRAM_START, phase2.PROGRAM_NIGHTS)).encode())
+    return h.hexdigest()
+
+
+def _sim_cache_path(folder: str):
+    from pathlib import Path
+    return Path(folder) / 'simulation' / SIM_CACHE_FILE
+
+
+def load_simulation_cache(folder: str, fingerprint: str) -> dict | None:
+    """The simulation saved on disk for exactly this input (None when absent, stale or unreadable)."""
+    import pickle
+    path = _sim_cache_path(folder)
+    try:
+        with open(path, 'rb') as fh:
+            data = pickle.load(fh)
+        return data['sim'] if data.get('fingerprint') == fingerprint else None
+    except Exception:
+        return None
+
+
+def save_simulation_cache(folder: str, fingerprint: str, sim: dict) -> bool:
+    """Write the simulation next to the schedule (atomic rename); False when the folder is not writable (e.g. the public server)."""
+    import os
+    import pickle
+    path = _sim_cache_path(folder)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f'.tmp{os.getpid()}')
+        with open(tmp, 'wb') as fh:
+            pickle.dump({'fingerprint': fingerprint, 'sim': sim}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def run_simulation(folder: str, signature: tuple, projects_sig: tuple, schedule_sig: tuple, key: tuple, sun_alt: float) -> dict:
     plans = saved_plans(folder, signature, projects_sig, schedule_sig, key, sun_alt)
     grid = program_data(key, sun_alt)['grid']
     fixed = simulate.load_fixed_programmes(grid, live_config())
     result = simulate.simulate(plans, grid, fixed, runs=SIM_RUNS, bad_weather=SIM_BAD_WEATHER, seed=SIM_SEED)
     rows = {f"{r['project']}|{r['target']}#{r['part']}": r for r in simulate.summary_rows(result, plans)}
     return {'result': result, 'rows': rows, 'expected': result.expected_by_key(), 'fixed': [(f.name, len(f.tile_ids), f.tile_ids[0], f.cadence_days) for f in fixed]}
+
+
+@st.cache_resource(show_spinner=False)
+def simulated_saved(folder: str, signature: tuple, projects_sig: tuple, schedule_sig: tuple, key: tuple, sun_alt: float, fixed_sig: tuple) -> dict:
+    """
+    The Monte-Carlo scheduling of the saved schedule (SIM_RUNS runs, SIM_BAD_WEATHER of the nights lost): read
+    from simulation/simulation_cache.pkl when it was made for exactly this input (the operator page writes it
+    on Save schedule), else computed here and written back when the folder is writable.
+    """
+    fingerprint = simulation_fingerprint(folder, key, sun_alt)
+    sim = load_simulation_cache(folder, fingerprint)
+    if sim is None:
+        sim = run_simulation(folder, signature, projects_sig, schedule_sig, key, sun_alt)
+        save_simulation_cache(folder, fingerprint, sim)
+    return sim
+
+
+@st.cache_resource(show_spinner=False)
+def warm_simulation(folder: str, signature: tuple, projects_sig: tuple, schedule_sig: tuple, key: tuple, sun_alt: float, fixed_sig: tuple) -> bool:
+    """Load (or compute) the simulation of the saved schedule in a background thread so that the first PI does not wait."""
+    import threading as _threading
+
+    def work():
+        try:
+            simulated_saved(folder, signature, projects_sig, schedule_sig, key, sun_alt, fixed_sig)
+        except Exception:
+            pass
+
+    _threading.Thread(target=work, name='simulation-warmup', daemon=True).start()
+    return True
 
 
 def with_expected(plans: dict, expected: dict) -> dict:

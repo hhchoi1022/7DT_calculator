@@ -213,7 +213,9 @@ never copy its contents into the repo (some files hold credentials). Mode files 
   are reduced to per-night "another programme has an epoch" marks (no names, no hours). It reads the
   schedule the operator saved (`schedule.json`), so unsaved edits are invisible to PIs, and shows the
   Monte-Carlo result of that saved schedule (`schedule_plots.simulated_saved`, 200 runs, 10 % weather,
-  cached per schedule file): P(all epochs), date percentiles and the per-night probability heatmap; the
+  stored by the operator page on Save schedule as `simulation/simulation_cache.pkl` in the request folder,
+  keyed by a content hash of every input, loaded in a background thread when the viewer starts, computed
+  and written back only when stale): P(all epochs), date percentiles and the per-night probability heatmap; the
   viewer calls the simulated nights "expected observations" and the planned range "OBS_WINDOW (scheduled)".
   An operator's note (`operator_note.txt` in the request folder, edited on the operator page) is shown at
   the top of the viewer; the admin key with a Project ID shows exactly that PI's view. The operator page

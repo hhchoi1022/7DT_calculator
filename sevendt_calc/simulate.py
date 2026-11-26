@@ -198,7 +198,7 @@ def simulate(plans: dict, grid: vis.SeasonGrid, fixed: list, runs: int = 100, ba
         ahead[k] = np.cumsum(f[::-1])[::-1]                        # feasible nights from this one to the end
     done = np.zeros((runs, len(keys), n_nights), bool)
     max_epochs = max([int(plans[k].settings.epochs) for k in keys] + [1])
-    epoch_nights = np.full((runs, len(keys), max_epochs), -1, int)
+    epoch_nights = np.full((runs, len(keys), max_epochs), -1, np.int16)
     clear = rng.random((runs, n_nights)) >= bad_weather
     fixed_done = {prog.name: np.zeros((runs, n_nights), bool) for prog in fixed}
     fixed_visits = {prog.name: np.zeros((runs, n_nights), int) for prog in fixed}

@@ -19,7 +19,7 @@ import streamlit as st
 
 from schedule_plots import (CAT_INDEX, MIN_ALT, SIM_BAD_WEATHER, SIM_RUNS, dot_trace, fixed_signature, heatmap, load_requests_cached, night_dates, night_figure, night_tables,
                             probability_figure, program_data, projects_figure, projects_signature, projects_table, read_operator_note, saved_plans, schedule_signature,
-                            simulated_saved, visibility_figure, warm_program_data, with_expected)
+                            simulated_saved, visibility_figure, warm_program_data, warm_simulation, with_expected)
 from sevendt_calc import keyguard, phase2, trigger
 from sevendt_calc import visibility as vis
 from ui_common import feedback_note, live_config, live_text_input, site_key
@@ -231,6 +231,10 @@ def main():
     if not signature:
         st.error('No request files are registered on this server.')
         return
+    try:                                                  # start loading the precomputed simulation before anyone logs in
+        warm_simulation(str(folder), signature, projects_signature(), schedule_signature(str(folder)), key, sun_alt, fixed_signature())
+    except Exception:
+        pass
     c1, c2 = st.columns(2)
     with c1:
         pid = live_text_input('Project ID', key='pl_pid', placeholder='e.g. 26007', help='Your 5-digit Project ID')
