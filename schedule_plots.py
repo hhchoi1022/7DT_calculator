@@ -91,6 +91,22 @@ def scheduled_texts(parts: list, grid: vis.SeasonGrid) -> list:
     return out
 
 
+def range_spans(parts: list, grid: vis.SeasonGrid) -> list:
+    """(first, last) night indices of every scheduled range of the enabled parts, one span per range (not merged)."""
+    spans = set()
+    n = len(grid.dates)
+    for p in parts:
+        if not p.settings.enabled:
+            continue
+        for lo, hi in p.settings.bounds_jd(grid):
+            first = int(np.searchsorted(grid.end_jd, lo, side='right'))         # first night that ends after the range starts
+            last = int(np.searchsorted(grid.start_jd, hi, side='left')) - 1     # last night that starts before the range ends
+            first, last = max(first, 0), min(last, n - 1)
+            if last >= first:
+                spans.add((first, last))
+    return sorted(spans)
+
+
 def runs(mask: np.ndarray) -> list:
     """(first, last) index pairs of the True runs of a boolean array."""
     out, start = [], None
@@ -211,13 +227,20 @@ def visibility_figure(items: list, grid: vis.SeasonGrid, mode: str, show_moon: b
     half = timedelta(hours=12)
     shapes = []
     for k, (rng, req_mask) in enumerate(zip(ranges, requested)):
-        for a, b in runs(rng):
-            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k, y1=k, line=dict(color=WINDOW_COLOR, width=4), layer='above'))
+        req_k, _, j_k = items[k]
+        for a, b in range_spans(phase2.plans_of(plans, req_k, j_k), grid):        # one red segment per scheduled range, separated
+            shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - timedelta(hours=9), x1=dates[b] + timedelta(hours=9), y0=k, y1=k,
+                               line=dict(color=WINDOW_COLOR, width=4), layer='above'))
         for a, b in runs(req_mask):
             shapes.append(dict(type='line', xref='x2', yref='y2', x0=dates[a] - half, x1=dates[b] + half, y0=k + 0.36, y1=k + 0.36, line=dict(color='#1f77b4', width=2), layer='above'))
-    for a, b in runs(planned):
-        shapes.append(dict(type='rect', xref='x', yref='paper', x0=dates[a] - half, x1=dates[b] + half, y0=1 - 330 / (330 + strip_h), y1=1, fillcolor='rgba(0,0,0,0)',
-                           line=dict(color=WINDOW_COLOR, width=2, dash='dot'), layer='above'))
+    # one dotted box per scheduled range (not per merged run of nights), so neighbouring single-night ranges stay distinguishable
+    gap = timedelta(hours=9)
+    boxes = set()
+    for req, table, j in items:
+        boxes.update(range_spans(phase2.plans_of(plans, req, j), grid))
+    for first, last in sorted(boxes):
+        shapes.append(dict(type='rect', xref='x', yref='paper', x0=dates[first] - gap, x1=dates[last] + gap, y0=1 - 330 / (330 + strip_h), y1=1, fillcolor='rgba(0,0,0,0)',
+                           line=dict(color=WINDOW_COLOR, width=1.5, dash='dot'), layer='above'))
     ref = MIN_ALT if mode == 'alt' else phase2.GOOD_HOURS
     shapes.append(dict(type='line', xref='paper', yref='y', x0=0, x1=1, y0=ref, y1=ref, line=dict(color='#888', width=1, dash='dash')))
     legend = [('max altitude ≥ 30°' if mode == 'alt' else 'observable (> 0 h)', phase2.STRIP_CATEGORIES[CAT_INDEX['obs']][2]),
